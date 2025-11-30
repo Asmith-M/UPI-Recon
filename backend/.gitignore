@@ -1,0 +1,6 @@
+/data/uploads/*
+/data/output/*
+
+/__pycache__
+
+/venv

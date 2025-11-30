@@ -1,0 +1,224 @@
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import JSONResponse
+from typing import Optional
+import lookup
+import nlp
+import response_formatter
+
+# Create FastAPI app
+app = FastAPI(
+    title="Transaction Chatbot API",
+    description="Reconciliation lookup service for transaction queries by RRN or Transaction ID",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Run on application startup.
+    Check if data is loaded and print status.
+    """
+    if lookup.RECON_DATA:
+        print(f"✅ Chatbot API ready!")
+        print(f"   Loaded: {len(lookup.RECON_DATA)} transactions")
+        print(f"   Run ID: {lookup.CURRENT_RUN_ID}")
+        print(f"   Loaded at: {lookup.LOADED_AT}")
+    else:
+        print("⚠️  Warning: No reconciliation data loaded")
+        print("   API will return errors until data is available")
+
+
+@app.get("/")
+async def root():
+    """
+    Root endpoint - API information.
+    """
+    return {
+        "service": "Transaction Chatbot API",
+        "version": "1.0.0",
+        "status": "running",
+        "data_loaded": len(lookup.RECON_DATA) > 0,
+        "endpoints": {
+            "chatbot": "/api/v1/chatbot?rrn=123456789012",
+            "health": "/health",
+            "stats": "/api/v1/stats",
+            "reload": "/api/v1/reload (POST)",
+            "docs": "/docs"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint.
+    Returns service status and data availability.
+    """
+    data_loaded = len(lookup.RECON_DATA) > 0
+    
+    return {
+        "status": "healthy" if data_loaded else "degraded",
+        "service": "chatbot-service",
+        "version": "1.0.0",
+        "data_loaded": data_loaded,
+        "transaction_count": len(lookup.RECON_DATA),
+        "current_run_id": lookup.CURRENT_RUN_ID,
+        "loaded_at": lookup.LOADED_AT.isoformat() if lookup.LOADED_AT else None
+    }
+
+
+@app.get("/api/v1/chatbot")
+async def chatbot_lookup(
+    rrn: Optional[str] = Query(None, description="12-digit Retrieval Reference Number"),
+    txn_id: Optional[str] = Query(None, description="Transaction ID (e.g., TXN001)")
+):
+    """
+    Main chatbot endpoint - lookup transaction by RRN or Transaction ID.
+    
+    Query Parameters:
+        - rrn: 12-digit RRN (optional)
+        - txn_id: Transaction ID (optional)
+        
+    Note: At least one parameter must be provided.
+    
+    Returns:
+        Transaction details with reconciliation status across CBS, Switch, and NPCI systems.
+    """
+    try:
+        # Step 1: Validate input - at least one parameter required
+        if not rrn and not txn_id:
+            error_response = response_formatter.format_validation_error(
+                "Missing required parameter. Provide either 'rrn' or 'txn_id'",
+                details={
+                    "provided": {"rrn": None, "txn_id": None},
+                    "required": "At least one of: rrn, txn_id"
+                }
+            )
+            return JSONResponse(status_code=400, content=error_response)
+        
+        # Step 2: Validate and search by RRN if provided
+        if rrn:
+            # Validate RRN format
+            if not nlp.validate_rrn(rrn):
+                error_response = response_formatter.format_validation_error(
+                    "Invalid RRN format. RRN must be exactly 12 digits",
+                    details={
+                        "provided": rrn,
+                        "expected_format": "12 digits (e.g., 123456789012)",
+                        "length": len(rrn)
+                    }
+                )
+                return JSONResponse(status_code=400, content=error_response)
+            
+            # Search by RRN
+            transaction = lookup.search_by_rrn(rrn)
+            search_type = "rrn"
+            identifier = rrn
+        
+        # Step 3: Validate and search by TXN_ID if RRN not provided
+        else:
+            # Validate TXN_ID format
+            if not nlp.validate_txn_id(txn_id):
+                error_response = response_formatter.format_validation_error(
+                    "Invalid transaction ID format. Must contain only digits",
+                    details={
+                        "provided": txn_id,
+                        "expected_format": "Digits only (e.g., 001, 123)"
+                    }
+                )
+                return JSONResponse(status_code=400, content=error_response)
+            
+            # Search by TXN_ID
+            transaction = lookup.search_by_txn_id(f"TXN{txn_id}" if not txn_id.startswith("TXN") else txn_id)
+            search_type = "txn_id"
+            identifier = txn_id
+        
+        # Step 4: Handle not found
+        if transaction is None:
+            run_id = lookup.CURRENT_RUN_ID or "UNKNOWN"
+            error_response = response_formatter.format_not_found_response(
+                identifier, 
+                search_type, 
+                run_id
+            )
+            return JSONResponse(status_code=404, content=error_response)
+        
+        # Step 5: Format and return successful response
+        run_id = lookup.CURRENT_RUN_ID or "UNKNOWN"
+        response = response_formatter.format_transaction_response(transaction, run_id)
+        return JSONResponse(status_code=200, content=response)
+    
+    except Exception as e:
+        # Handle unexpected errors
+        print(f"❌ Error in chatbot_lookup: {e}")
+        error_response = response_formatter.format_error_response(
+            e, 
+            context="chatbot_lookup"
+        )
+        return JSONResponse(status_code=500, content=error_response)
+
+
+@app.get("/api/v1/stats")
+async def get_statistics():
+    """
+    Get reconciliation data statistics.
+    
+    Returns summary of loaded data including:
+    - Total transaction count
+    - Status breakdown (FULL_MATCH, PARTIAL_MATCH, NO_MATCH)
+    - Current run ID
+    - Load timestamp
+    """
+    try:
+        stats = lookup.get_statistics()
+        return JSONResponse(status_code=200, content=stats)
+    except Exception as e:
+        error_response = response_formatter.format_error_response(
+            e,
+            context="get_statistics"
+        )
+        return JSONResponse(status_code=500, content=error_response)
+
+
+@app.post("/api/v1/reload")
+async def reload_reconciliation_data():
+    """
+    Reload reconciliation data from latest run.
+    
+    Useful when new reconciliation batch is available.
+    Forces refresh of in-memory cache without restarting server.
+    
+    Returns:
+        Success/failure message with details
+    """
+    try:
+        success = lookup.reload_data()
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Data reloaded from {lookup.CURRENT_RUN_ID}",
+                "transaction_count": len(lookup.RECON_DATA),
+                "loaded_at": lookup.LOADED_AT.isoformat() if lookup.LOADED_AT else None
+            }
+        else:
+            return {
+                "status": "no_change",
+                "message": f"Already using latest run: {lookup.CURRENT_RUN_ID}",
+                "transaction_count": len(lookup.RECON_DATA)
+            }
+    except Exception as e:
+        error_response = response_formatter.format_error_response(
+            e,
+            context="reload_data"
+        )
+        return JSONResponse(status_code=500, content=error_response)
+
+
+# Run with: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
