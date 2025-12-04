@@ -483,9 +483,6 @@ async def force_match_rrn(rrn: str, source1: str, source2: str, action: str = "m
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# NOTE: Chatbot endpoints are handled by the mounted chatbot service at /chatbot-service
-# Requests to /api/v1/chatbot* will proxy to /chatbot-service/api/v1/chatbot*
-
 # NEW: Auto-match parameters API
 @app.post("/api/v1/auto-match/parameters")
 async def set_auto_match_parameters(
