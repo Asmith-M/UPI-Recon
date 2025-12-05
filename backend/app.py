@@ -3,10 +3,20 @@ from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import json
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from file_handler import FileHandler
 from recon_engine import ReconciliationEngine
+from rollback_manager import RollbackManager, RollbackLevel
+from exception_handler import ExceptionHandler, ExceptionType, RecoveryStrategy
+from gl_proofing_engine import GLJustificationEngine
+from settlement_engine import SettlementEngine
+from audit_trail import AuditTrail, AuditAction, AuditLevel
 from config import RUN_ID_FORMAT, OUTPUT_DIR, UPLOAD_DIR
+from logging_config import setup_logging, get_logger
+
+# Initialize logging
+setup_logging(log_level="INFO", enable_json=True)
+logger = get_logger(__name__)
 
 app = FastAPI(
     title="NSTechX Bank Reconciliation API",
@@ -25,6 +35,10 @@ app.add_middleware(
 
 file_handler = FileHandler()
 recon_engine = ReconciliationEngine()
+rollback_manager = RollbackManager(upload_dir=UPLOAD_DIR, output_dir=OUTPUT_DIR)
+exception_handler = ExceptionHandler(upload_dir=UPLOAD_DIR, output_dir=OUTPUT_DIR)
+gl_engine = GLJustificationEngine(output_dir=OUTPUT_DIR)
+audit_trail = AuditTrail(output_dir=OUTPUT_DIR)
 
 # ============================================================================
 # CHATBOT INTEGRATION (EMBEDDED IN MAIN APP)
@@ -36,10 +50,10 @@ try:
     from chatbot_services import nlp
     from chatbot_services import response_formatter
     CHATBOT_AVAILABLE = True
-    print("✅ Chatbot modules loaded successfully")
+    logger.info("✅ Chatbot modules loaded successfully")
 except ImportError as e:
     CHATBOT_AVAILABLE = False
-    print(f"⚠️  Warning: Chatbot modules not available - {e}")
+    logger.warning(f"⚠️  Warning: Chatbot modules not available - {e}")
 
 # ============================================================================
 # ROOT & HEALTH ENDPOINTS
@@ -64,6 +78,615 @@ async def root():
         }
     }
 
+# ==================== EXCEPTION HANDLING ENDPOINTS (Phase 3 Task 3) ====================
+
+@app.post("/api/v1/exception/sftp-connection")
+async def handle_sftp_connection(
+    run_id: str = Query(..., description="Run ID"),
+    host: str = Query(..., description="SFTP host"),
+    error: str = Query("", description="Error message")
+):
+    """Handle SFTP connection failure with retry logic"""
+    try:
+        recovery = exception_handler.handle_sftp_connection_failure(
+            run_id=run_id,
+            host=host,
+            error_message=error
+        )
+        
+        return {
+            "status": "exception_logged",
+            "run_id": run_id,
+            "exception_type": "sftp_connection_failed",
+            "recovery_strategy": recovery.value,
+            "message": f"SFTP connection failure logged. Strategy: {recovery.value}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/exception/sftp-timeout")
+async def handle_sftp_timeout(
+    run_id: str = Query(..., description="Run ID"),
+    filename: str = Query(..., description="Filename"),
+    timeout_seconds: int = Query(30, description="Timeout in seconds")
+):
+    """Handle SFTP timeout during file transfer"""
+    try:
+        recovery = exception_handler.handle_sftp_timeout(
+            run_id=run_id,
+            filename=filename,
+            timeout_seconds=timeout_seconds
+        )
+        
+        return {
+            "status": "timeout_handled",
+            "run_id": run_id,
+            "filename": filename,
+            "recovery_strategy": recovery.value,
+            "message": f"SFTP timeout handled. Strategy: {recovery.value}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/exception/duplicate-cycle")
+async def handle_duplicate_cycle(
+    run_id: str = Query(..., description="Run ID"),
+    cycle_id: str = Query(..., description="Cycle ID (e.g., 1A)"),
+    current_filename: str = Query(..., description="Current filename"),
+    existing_filename: str = Query(..., description="Existing filename")
+):
+    """Handle duplicate cycle detection"""
+    try:
+        recovery = exception_handler.handle_duplicate_cycle(
+            run_id=run_id,
+            cycle_id=cycle_id,
+            current_filename=current_filename,
+            existing_filename=existing_filename
+        )
+        
+        return {
+            "status": "duplicate_detected",
+            "run_id": run_id,
+            "cycle_id": cycle_id,
+            "existing_file": existing_filename,
+            "conflicting_file": current_filename,
+            "recovery_strategy": recovery.value,
+            "message": f"Duplicate cycle detected and skipped. {existing_filename} will be used."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/exception/network-timeout")
+async def handle_network_timeout(
+    run_id: str = Query(..., description="Run ID"),
+    service: str = Query(..., description="Service name (DB, API, etc.)"),
+    error: str = Query("", description="Error message")
+):
+    """Handle network timeout with retry logic"""
+    try:
+        recovery = exception_handler.handle_network_timeout(
+            run_id=run_id,
+            service=service,
+            error_message=error
+        )
+        
+        return {
+            "status": "timeout_logged",
+            "run_id": run_id,
+            "service": service,
+            "recovery_strategy": recovery.value,
+            "message": f"Network timeout logged. Strategy: {recovery.value}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/exception/validation-error")
+async def handle_validation_error(
+    run_id: str = Query(..., description="Run ID"),
+    filename: str = Query(..., description="Filename"),
+    error_details: str = Query("{}", description="Error details JSON")
+):
+    """Handle file validation errors"""
+    try:
+        details = json.loads(error_details)
+        recovery = exception_handler.handle_validation_error(
+            run_id=run_id,
+            filename=filename,
+            error_details=details
+        )
+        
+        return {
+            "status": "validation_error_handled",
+            "run_id": run_id,
+            "filename": filename,
+            "recovery_strategy": recovery.value,
+            "message": f"Validation error logged. File will be skipped."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/exception/insufficient-space")
+async def handle_insufficient_space(
+    run_id: str = Query(..., description="Run ID"),
+    required_bytes: int = Query(..., description="Required space in bytes"),
+    available_bytes: int = Query(..., description="Available space in bytes")
+):
+    """Handle insufficient disk space error"""
+    try:
+        recovery = exception_handler.handle_insufficient_disk_space(
+            run_id=run_id,
+            required_bytes=required_bytes,
+            available_bytes=available_bytes
+        )
+        
+        return {
+            "status": "space_error_logged",
+            "run_id": run_id,
+            "required_gb": required_bytes / (1024**3),
+            "available_gb": available_bytes / (1024**3),
+            "recovery_strategy": recovery.value,
+            "message": f"Insufficient disk space. Reconciliation aborted. Free up space and retry."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/exception/database-error")
+async def handle_database_error(
+    run_id: str = Query(..., description="Run ID"),
+    error: str = Query("", description="Error message")
+):
+    """Handle database errors with retry and rollback logic"""
+    try:
+        recovery = exception_handler.handle_database_error(
+            run_id=run_id,
+            error_message=error
+        )
+        
+        return {
+            "status": "database_error_logged",
+            "run_id": run_id,
+            "recovery_strategy": recovery.value,
+            "message": f"Database error logged. Strategy: {recovery.value}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/exception/summary")
+async def get_exception_summary(run_id: Optional[str] = Query(None, description="Optional run ID filter")):
+    """Get exception summary and statistics"""
+    try:
+        summary = exception_handler.get_exception_summary(run_id)
+        return {
+            "status": "success",
+            "data": summary
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/exception/run/{run_id}")
+async def get_run_exceptions(run_id: str):
+    """Get all exceptions for a specific run"""
+    try:
+        exceptions = exception_handler.get_run_exceptions(run_id)
+        has_critical = exception_handler.check_run_has_critical_exceptions(run_id)
+        duplicate_cycles = exception_handler.check_run_has_duplicate_cycles(run_id)
+        
+        return {
+            "status": "success",
+            "run_id": run_id,
+            "total_exceptions": len(exceptions),
+            "has_critical_exceptions": has_critical,
+            "duplicate_cycles": duplicate_cycles,
+            "exceptions": exceptions
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/exception/resolve/{exception_id}")
+async def resolve_exception(exception_id: str):
+    """Mark an exception as resolved"""
+    try:
+        exception_handler.resolve_exception(exception_id)
+        
+        return {
+            "status": "success",
+            "exception_id": exception_id,
+            "message": "Exception marked as resolved"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== GL JUSTIFICATION & PROOFING ENDPOINTS (Phase 3 Task 4) ====================
+
+@app.post("/api/v1/gl/proofing/create")
+async def create_gl_proofing_report(
+    run_id: str = Query(..., description="Run ID"),
+    report_date: str = Query(..., description="Report date (YYYY-MM-DD)"),
+    gl_accounts: str = Query("[]", description="GL accounts JSON array"),
+    variance_bridges: str = Query("[]", description="Variance bridges JSON array")
+):
+    """Create a GL proofing report with variance bridging"""
+    try:
+        gl_accounts_data = json.loads(gl_accounts)
+        variance_bridges_data = json.loads(variance_bridges)
+        
+        report = gl_engine.create_proofing_report(
+            run_id=run_id,
+            report_date=report_date,
+            gl_accounts_data=gl_accounts_data,
+            variance_bridges_data=variance_bridges_data
+        )
+        
+        return {
+            "status": "success",
+            "report_id": report.report_id,
+            "run_id": run_id,
+            "report_date": report_date,
+            "summary": {
+                "total_accounts": report.total_accounts,
+                "reconciled_accounts": report.reconciled_accounts,
+                "unreconciled_accounts": report.unreconciled_accounts,
+                "total_variance": report.total_variance,
+                "total_bridged": report.total_bridged,
+                "bridging_coverage_percent": round(report.bridging_coverage, 2),
+                "remaining_variance": report.remaining_variance,
+                "fully_reconciled": report.fully_reconciled
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/gl/proofing/bridge")
+async def add_variance_bridge(
+    run_id: str = Query(..., description="Run ID"),
+    category: str = Query(..., description="Variance category (e.g., TIMING_DIFFERENCE, PENDING_CLEARANCES)"),
+    description: str = Query(..., description="Bridge description"),
+    amount: float = Query(..., description="Variance amount"),
+    justification: str = Query(..., description="Justification for the variance"),
+    transaction_date: str = Query(None, description="Transaction date (YYYY-MM-DD)"),
+    report_date: str = Query(None, description="Report date (YYYY-MM-DD)")
+):
+    """Add a variance bridge to explain part of the variance"""
+    try:
+        bridge = gl_engine.add_variance_bridge(
+            run_id=run_id,
+            category=category,
+            description=description,
+            amount=amount,
+            justification=justification,
+            transaction_date=transaction_date,
+            report_date=report_date
+        )
+        
+        return {
+            "status": "success",
+            "bridge_id": bridge.bridge_id,
+            "category": bridge.category.value,
+            "amount": bridge.amount,
+            "aging_days": bridge.aging_days,
+            "priority": bridge.priority,
+            "message": f"Variance bridge created: ₹{amount:,.2f} ({bridge.category.value})"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/gl/proofing/report/{report_id}")
+async def get_proofing_report(report_id: str):
+    """Get a specific GL proofing report"""
+    try:
+        report = gl_engine.get_report(report_id)
+        
+        if not report:
+            raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+        
+        return {
+            "status": "success",
+            "report": report
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/gl/proofing/reports")
+async def get_all_proofing_reports():
+    """Get all GL proofing reports"""
+    try:
+        reports = gl_engine.get_all_reports()
+        
+        return {
+            "status": "success",
+            "total_reports": len(reports),
+            "reports": reports
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/gl/proofing/unreconciled/{run_id}")
+async def get_unreconciled_accounts(run_id: str):
+    """Get unreconciled GL accounts for a run"""
+    try:
+        accounts = gl_engine.get_unreconciled_accounts(run_id)
+        
+        return {
+            "status": "success",
+            "run_id": run_id,
+            "unreconciled_count": len(accounts),
+            "accounts": [acc.to_dict() for acc in accounts]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/gl/proofing/high-priority/{run_id}")
+async def get_high_priority_bridges(run_id: str):
+    """Get high and critical priority variance bridges"""
+    try:
+        bridges = gl_engine.get_high_priority_bridges(run_id)
+        
+        critical = [b for b in bridges if b.priority == "CRITICAL"]
+        high = [b for b in bridges if b.priority == "HIGH"]
+        
+        return {
+            "status": "success",
+            "run_id": run_id,
+            "critical_count": len(critical),
+            "high_count": len(high),
+            "total": len(bridges),
+            "critical_bridges": [b.to_dict() for b in critical],
+            "high_bridges": [b.to_dict() for b in high]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/gl/proofing/aging/{run_id}")
+async def get_aging_summary(run_id: str):
+    """Get variance bridge aging summary"""
+    try:
+        aging = gl_engine.get_aging_summary(run_id)
+        
+        total = (
+            len(aging.get("0_1_days", [])) +
+            len(aging.get("1_3_days", [])) +
+            len(aging.get("3_7_days", [])) +
+            len(aging.get("7_plus_days", []))
+        )
+        
+        return {
+            "status": "success",
+            "run_id": run_id,
+            "total_bridges": total,
+            "aging_summary": aging
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/gl/proofing/bridge/resolve/{bridge_id}")
+async def resolve_variance_bridge(bridge_id: str, resolved_by: str = Query("System")):
+    """Mark a variance bridge as resolved"""
+    try:
+        gl_engine.resolve_variance_bridge(bridge_id, resolved_by)
+        
+        return {
+            "status": "success",
+            "bridge_id": bridge_id,
+            "message": f"Variance bridge resolved by {resolved_by}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== AUDIT TRAIL & LOGGING ENDPOINTS (Phase 3 Task 5) ====================
+
+@app.get("/api/v1/audit/trail/{run_id}")
+async def get_audit_trail(run_id: str):
+    """Get complete audit trail for a run"""
+    try:
+        trail = audit_trail.get_run_audit_trail(run_id)
+        
+        return {
+            "status": "success",
+            "run_id": run_id,
+            "total_entries": len(trail),
+            "entries": trail
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/audit/user/{user_id}")
+async def get_user_actions(user_id: str, limit: int = Query(100, description="Limit results")):
+    """Get all actions performed by a specific user"""
+    try:
+        actions = audit_trail.get_user_actions(user_id, limit)
+        
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "total_actions": len(actions),
+            "actions": actions
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/audit/summary")
+async def get_audit_summary(run_id: Optional[str] = Query(None, description="Optional run ID filter")):
+    """Get audit trail summary"""
+    try:
+        summary = audit_trail.get_audit_summary(run_id)
+        
+        return {
+            "status": "success",
+            "summary": summary
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/audit/date-range")
+async def get_actions_by_date(
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)")
+):
+    """Get audit entries within a date range"""
+    try:
+        entries = audit_trail.get_actions_by_date(start_date, end_date)
+        
+        return {
+            "status": "success",
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_entries": len(entries),
+            "entries": entries
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/audit/log-action")
+async def log_custom_action(
+    run_id: str = Query(..., description="Run ID"),
+    action: str = Query(..., description="Action name"),
+    user_id: Optional[str] = Query(None, description="User ID"),
+    level: str = Query("INFO", description="Log level (INFO, WARNING, ERROR, CRITICAL)"),
+    details: str = Query("{}", description="Details JSON")
+):
+    """Log a custom action to audit trail"""
+    try:
+        action_details = json.loads(details)
+        level_enum = AuditLevel[level.upper()]
+        
+        entry = audit_trail.log_action(
+            action=AuditAction.USER_ACTION,
+            run_id=run_id,
+            user_id=user_id,
+            level=level_enum,
+            details={
+                "action_name": action,
+                **action_details
+            }
+        )
+        
+        return {
+            "status": "success",
+            "audit_id": entry.audit_id,
+            "message": f"Action logged: {action}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/audit/compliance/{run_id}")
+async def generate_compliance_report(
+    run_id: str,
+    report_type: str = Query("full", description="Report type (full, critical, high_privilege)")
+):
+    """Generate compliance report for a run"""
+    try:
+        report = audit_trail.generate_compliance_report(run_id, report_type)
+        
+        return {
+            "status": "success",
+            "report": report
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/audit/event/recon")
+async def log_recon_event(
+    run_id: str = Query(..., description="Run ID"),
+    event: str = Query(..., description="Event (started, completed, failed)"),
+    user_id: Optional[str] = Query(None, description="User ID"),
+    matched_count: int = Query(0, description="Matched transaction count"),
+    unmatched_count: int = Query(0, description="Unmatched transaction count"),
+    error: Optional[str] = Query(None, description="Error message if failed")
+):
+    """Log reconciliation lifecycle event"""
+    try:
+        entry = audit_trail.log_reconciliation_event(
+            run_id=run_id,
+            event=event,
+            user_id=user_id,
+            matched_count=matched_count,
+            unmatched_count=unmatched_count,
+            error=error
+        )
+        
+        return {
+            "status": "success",
+            "audit_id": entry.audit_id,
+            "message": f"Reconciliation {event} logged"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/audit/event/rollback")
+async def log_rollback_event(
+    run_id: str = Query(..., description="Run ID"),
+    rollback_level: str = Query(..., description="Rollback level"),
+    user_id: Optional[str] = Query(None, description="User ID"),
+    status: str = Query("completed", description="Status (completed, failed)")
+):
+    """Log rollback operation"""
+    try:
+        entry = audit_trail.log_rollback_operation(
+            run_id=run_id,
+            rollback_level=rollback_level,
+            user_id=user_id,
+            status=status
+        )
+        
+        return {
+            "status": "success",
+            "audit_id": entry.audit_id,
+            "message": f"Rollback {rollback_level} logged"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/audit/event/force-match")
+async def log_force_match_event(
+    run_id: str = Query(..., description="Run ID"),
+    rrn: str = Query(..., description="RRN"),
+    source1: str = Query(..., description="Source 1"),
+    source2: str = Query(..., description="Source 2"),
+    user_id: Optional[str] = Query(None, description="User ID")
+):
+    """Log force match operation"""
+    try:
+        entry = audit_trail.log_force_match(
+            run_id=run_id,
+            rrn=rrn,
+            source1=source1,
+            source2=source2,
+            user_id=user_id
+        )
+        
+        return {
+            "status": "success",
+            "audit_id": entry.audit_id,
+            "message": f"Force match for {rrn} logged"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/audit/event/gl")
+async def log_gl_event(
+    run_id: str = Query(..., description="Run ID"),
+    operation: str = Query(..., description="Operation type"),
+    user_id: Optional[str] = Query(None, description="User ID"),
+    details: str = Query("{}", description="Additional details JSON")
+):
+    """Log GL operation"""
+    try:
+        operation_details = json.loads(details)
+        entry = audit_trail.log_gl_operation(
+            run_id=run_id,
+            operation=operation,
+            user_id=user_id,
+            details=operation_details
+        )
+        
+        return {
+            "status": "success",
+            "audit_id": entry.audit_id,
+            "message": f"GL {operation} logged"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/health")
 async def health_check():
     """Main API health check"""
@@ -78,14 +701,14 @@ async def upload_files(
     cbs_inward: UploadFile = File(...),
     cbs_outward: UploadFile = File(...),
     switch: UploadFile = File(...),
-    npci_inward: UploadFile = File(...),
-    npci_outward: UploadFile = File(...),
-    ntsl: UploadFile = File(...),
-    adjustment: UploadFile = File(...),
+    npci_inward: UploadFile = File(None),
+    npci_outward: UploadFile = File(None),
+    ntsl: UploadFile = File(None),
+    adjustment: UploadFile = File(None),
     cbs_balance: str = None,
     transaction_date: str = None
 ):
-    """Upload all 7 required files"""
+    """Upload files - CBS and Switch are required, NPCI files are optional"""
     try:
         # Get current run ID
         current_run_id = RUN_ID_FORMAT
@@ -94,25 +717,50 @@ async def upload_files(
         run_folder = os.path.join(UPLOAD_DIR, current_run_id)
         os.makedirs(run_folder, exist_ok=True)
         
-        # Collect all files with their original names
+        # Collect all files with their original names - only include non-None, non-empty files
         files = {
             cbs_inward.filename: await cbs_inward.read(),
             cbs_outward.filename: await cbs_outward.read(),
             switch.filename: await switch.read(),
-            npci_inward.filename: await npci_inward.read(),
-            npci_outward.filename: await npci_outward.read(),
-            ntsl.filename: await ntsl.read(),
-            adjustment.filename: await adjustment.read()
         }
+        
+        # Track uploaded files for response
+        uploaded_files = ['cbs_inward', 'cbs_outward', 'switch']
+        
+        # Add optional NPCI files only if provided and not empty
+        if npci_inward and npci_inward.filename:
+            content = await npci_inward.read()
+            if content:  # Only add if file has content
+                files[npci_inward.filename] = content
+                uploaded_files.append('npci_inward')
+                
+        if npci_outward and npci_outward.filename:
+            content = await npci_outward.read()
+            if content:  # Only add if file has content
+                files[npci_outward.filename] = content
+                uploaded_files.append('npci_outward')
+                
+        if ntsl and ntsl.filename:
+            content = await ntsl.read()
+            if content:  # Only add if file has content
+                files[ntsl.filename] = content
+                uploaded_files.append('ntsl')
+                
+        if adjustment and adjustment.filename:
+            content = await adjustment.read()
+            if content:  # Only add if file has content
+                files[adjustment.filename] = content
+                uploaded_files.append('adjustment')
         
         # Save files with original names
         saved_folder = file_handler.save_uploaded_files(files, current_run_id)
         
-        # Save metadata
+        # Save metadata including which files were uploaded
         metadata = {
             "cbs_balance": cbs_balance,
             "transaction_date": transaction_date,
-            "timestamp": __import__('datetime').datetime.now().isoformat()
+            "timestamp": __import__('datetime').datetime.now().isoformat(),
+            "uploaded_files": uploaded_files
         }
         metadata_path = os.path.join(run_folder, "metadata.json")
         with open(metadata_path, 'w') as f:
@@ -125,16 +773,16 @@ async def upload_files(
             "folder": saved_folder,
             "cbs_balance": cbs_balance,
             "transaction_date": transaction_date,
+            "uploaded_files": uploaded_files,
             "next_step": "Call /api/v1/recon/run to start reconciliation"
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
 
-@app.post("/api/v1/recon/run")
-async def run_reconciliation(direction: str = "INWARD"):
-    """Trigger reconciliation process"""
+@app.get("/api/v1/upload/metadata")
+async def get_upload_metadata():
+    """Get metadata of the latest upload including which files were uploaded"""
     try:
-        # Get latest run folder
         if not os.path.exists(UPLOAD_DIR):
             raise HTTPException(status_code=404, detail="Upload directory not found")
         
@@ -143,42 +791,206 @@ async def run_reconciliation(direction: str = "INWARD"):
             raise HTTPException(status_code=404, detail="No uploaded files found")
         
         latest_run = max(run_folders)
-        run_folder = os.path.join(UPLOAD_DIR, latest_run)
+        metadata_path = os.path.join(UPLOAD_DIR, latest_run, "metadata.json")
         
+        if not os.path.exists(metadata_path):
+            raise HTTPException(status_code=404, detail="Metadata not found")
+        
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        
+        return {
+            "status": "success",
+            "run_id": latest_run,
+            "metadata": metadata,
+            "uploaded_files": metadata.get("uploaded_files", [])
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/api/v1/recon/run")
+async def run_reconciliation(direction: str = "INWARD"):
+    """Trigger reconciliation process with comprehensive exception handling"""
+    run_id = None
+    try:
+        # Log reconciliation start
+        audit_trail.log_reconciliation_event(
+            run_id="INITIALIZING",
+            event="started",
+            user_id="SYSTEM"
+        )
+
+        # Get latest run folder
+        if not os.path.exists(UPLOAD_DIR):
+            raise HTTPException(status_code=404, detail="Upload directory not found")
+
+        run_folders = [f for f in os.listdir(UPLOAD_DIR) if f.startswith("RUN_")]
+        if not run_folders:
+            raise HTTPException(status_code=404, detail="No uploaded files found")
+
+        latest_run = max(run_folders)
+        run_id = latest_run
+        run_folder = os.path.join(UPLOAD_DIR, latest_run)
+
         # Check if the run folder exists
         if not os.path.exists(run_folder):
             raise HTTPException(status_code=404, detail=f"Run folder does not exist: {run_folder}")
-        
-        # Load files for reconciliation
-        dataframes = file_handler.load_files_for_recon(run_folder)
-        
-        if not dataframes:
-            raise HTTPException(status_code=400, detail="No files found in upload folder. Check file formats and column headers.")
-        
-        # Run reconciliation
-        results = recon_engine.reconcile(dataframes)
-        
-        # Create output directory
-        output_folder = os.path.join(OUTPUT_DIR, latest_run)
-        os.makedirs(output_folder, exist_ok=True)
-        
-        # Generate outputs
-        report_path = recon_engine.generate_report(results, output_folder)
-        adjustments_path = recon_engine.generate_adjustments_csv(results, output_folder)
-        
-        # Save recon_output.json
-        json_path = os.path.join(output_folder, "recon_output.json")
-        with open(json_path, 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        # ✅ Reload chatbot data after reconciliation completes
+
+        # Phase 1: File Loading with Exception Handling
+        try:
+            dataframes = file_handler.load_files_for_recon(run_folder)
+            if not dataframes:
+                # Handle file loading failure
+                recovery = exception_handler.handle_validation_error(
+                    run_id=run_id,
+                    filename="ALL_FILES",
+                    error_details={"error": "No valid files found", "folder": run_folder}
+                )
+                audit_trail.log_exception(run_id, "FILE_LOADING_FAILED", "No valid files found in upload folder")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File loading failed. Recovery strategy: {recovery.value}. Check file formats and column headers."
+                )
+        except Exception as file_error:
+            # Handle file processing errors
+            recovery = exception_handler.handle_validation_error(
+                run_id=run_id,
+                filename="FILE_PROCESSING",
+                error_details={"error": str(file_error), "phase": "file_loading"}
+            )
+            audit_trail.log_exception(run_id, "FILE_PROCESSING_ERROR", str(file_error))
+            raise HTTPException(
+                status_code=400,
+                detail=f"File processing error: {str(file_error)}. Recovery strategy: {recovery.value}"
+            )
+
+        # Phase 2: Reconciliation Logic with Exception Handling
+        try:
+            results = recon_engine.reconcile(dataframes)
+        except Exception as recon_error:
+            # Handle reconciliation logic errors
+            recovery = exception_handler.handle_database_error(
+                run_id=run_id,
+                error_message=f"Reconciliation logic failed: {str(recon_error)}"
+            )
+            audit_trail.log_exception(run_id, "RECONCILIATION_LOGIC_ERROR", str(recon_error))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Reconciliation logic failed: {str(recon_error)}. Recovery strategy: {recovery.value}"
+            )
+
+        # Phase 3: Output Generation with Exception Handling
+        try:
+            # Create output directory
+            output_folder = os.path.join(OUTPUT_DIR, latest_run)
+            os.makedirs(output_folder, exist_ok=True)
+
+            # Generate outputs
+            report_path = recon_engine.generate_report(results, output_folder)
+            adjustments_path = recon_engine.generate_adjustments_csv(results, output_folder)
+
+            # Save recon_output.json
+            json_path = os.path.join(output_folder, "recon_output.json")
+            with open(json_path, 'w') as f:
+                json.dump(results, f, indent=2)
+
+        except Exception as output_error:
+            # Handle output generation errors
+            recovery = exception_handler.handle_insufficient_disk_space(
+                run_id=run_id,
+                required_bytes=1024*1024,  # 1MB estimate
+                available_bytes=0  # Will be checked by handler
+            )
+            audit_trail.log_exception(run_id, "OUTPUT_GENERATION_ERROR", str(output_error))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Output generation failed: {str(output_error)}. Recovery strategy: {recovery.value}"
+            )
+
+        # Phase 4: Chatbot Integration with Exception Handling
+        chatbot_reload_success = False
         if CHATBOT_AVAILABLE:
             try:
                 success = lookup.reload_data()
-                print(f"✅ Chatbot data reloaded successfully: {success}")
-            except Exception as e:
-                print(f"⚠️  Warning: Could not reload chatbot data: {e}")
-        
+                chatbot_reload_success = success
+                logger.info(f"✅ Chatbot data reloaded successfully: {success}")
+            except Exception as chatbot_error:
+                logger.warning(f"⚠️  Warning: Could not reload chatbot data: {chatbot_error}")
+                # Log but don't fail the entire process
+                audit_trail.log_exception(run_id, "CHATBOT_RELOAD_WARNING", str(chatbot_error))
+
+        # Phase 5: Generate Accounting Vouchers and GL Entries
+        try:
+            settlement_result = settlement_engine.generate_vouchers_from_recon(results, latest_run)
+            logger.info(f"Generated {settlement_result['vouchers_generated']} vouchers totaling ₹{settlement_result['total_amount']:,.2f}")
+        except Exception as settlement_error:
+            logger.warning(f"Settlement generation failed: {str(settlement_error)}")
+            settlement_result = None
+
+        # Phase 6: Generate GL Proofing Report
+        try:
+            # Create sample GL accounts data (in real implementation, this would come from GL system)
+            gl_accounts_data = [
+                {
+                    "code": "100100",
+                    "name": "Cash in Hand",
+                    "opening_balance": 1000000.00,
+                    "closing_balance": 1000000.00 + (settlement_result['total_amount'] if settlement_result else 0),
+                    "book_balance": 1000000.00 + (settlement_result['total_amount'] if settlement_result else 0)
+                },
+                {
+                    "code": "100200",
+                    "name": "Bank Account",
+                    "opening_balance": 5000000.00,
+                    "closing_balance": 5000000.00 + (settlement_result['total_amount'] if settlement_result else 0),
+                    "book_balance": 5000000.00 + (settlement_result['total_amount'] if settlement_result else 0)
+                }
+            ]
+
+            # Create variance bridges for any unmatched transactions
+            variance_bridges_data = []
+            for rrn, record in results.items():
+                if record.get('status') in ['PARTIAL_MATCH', 'ORPHAN']:
+                    amount = 0.0
+                    if record.get('cbs'):
+                        amount = record['cbs'].get('amount', 0)
+                    elif record.get('switch'):
+                        amount = record['switch'].get('amount', 0)
+                    elif record.get('npci'):
+                        amount = record['npci'].get('amount', 0)
+
+                    if amount > 0:
+                        variance_bridges_data.append({
+                            "category": "PENDING_CLEARANCES",
+                            "description": f"Unmatched transaction RRN {rrn}",
+                            "amount": amount,
+                            "justification": f"Transaction {rrn} requires manual reconciliation",
+                            "transaction_date": record.get('cbs', {}).get('date') or datetime.now().strftime("%Y-%m-%d")
+                        })
+
+            if variance_bridges_data:
+                gl_report = gl_engine.create_proofing_report(
+                    run_id=latest_run,
+                    report_date=datetime.now().strftime("%Y-%m-%d"),
+                    gl_accounts_data=gl_accounts_data,
+                    variance_bridges_data=variance_bridges_data
+                )
+                logger.info(f"GL Proofing Report generated: {gl_report.report_id}")
+            else:
+                logger.info("No variances detected - GL accounts are reconciled")
+
+        except Exception as gl_error:
+            logger.warning(f"GL proofing report generation failed: {str(gl_error)}")
+
+        # Log successful completion
+        audit_trail.log_reconciliation_event(
+            run_id=run_id,
+            event="completed",
+            user_id="SYSTEM",
+            matched_count=len(recon_engine.matched_records),
+            unmatched_count=len(recon_engine.unmatched_records)
+        )
+
         return {
             "status": "completed",
             "run_id": latest_run,
@@ -188,46 +1000,39 @@ async def run_reconciliation(direction: str = "INWARD"):
             "exception_count": len(recon_engine.exceptions),
             "partial_match_count": len(recon_engine.partial_match_records),
             "orphan_count": len(recon_engine.orphan_records),
+            "settlement_generated": settlement_result is not None,
+            "settlement_vouchers": settlement_result['vouchers_generated'] if settlement_result else 0,
+            "settlement_amount": settlement_result['total_amount'] if settlement_result else 0,
             "next_step": "Chatbot is now ready to query transactions",
-            "chatbot_available": CHATBOT_AVAILABLE
+            "chatbot_available": CHATBOT_AVAILABLE,
+            "chatbot_reloaded": chatbot_reload_success
         }
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Reconciliation failed: {str(e)}")
-        
-        # Create output directory
-        output_folder = os.path.join(OUTPUT_DIR, latest_run)
-        os.makedirs(output_folder, exist_ok=True)
-        
-        # Generate outputs
-        report_path = recon_engine.generate_report(results, output_folder)
-        adjustments_path = recon_engine.generate_adjustments_csv(results, output_folder)
-        
-        # Save recon_output.json
-        json_path = os.path.join(output_folder, "recon_output.json")
-        with open(json_path, 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        # Trigger chatbot data reload via API
-        try:
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'chatbot_services'))
-            from lookup import reload_data
-            reload_data()
-            print(f"✅ Chatbot data reloaded with run {latest_run}")
-        except Exception as e:
-            print(f"⚠️  Warning: Could not reload chatbot data: {e}")
-        
-        return {
-            "status": "completed",
-            "run_id": latest_run,
-            "output_folder": output_folder,
-            "matched_count": len(recon_engine.matched_records),
-            "unmatched_count": len(recon_engine.unmatched_records),
-            "exception_count": len(recon_engine.exceptions),
-            "partial_match_count": len(recon_engine.partial_match_records),
-            "orphan_count": len(recon_engine.orphan_records)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Reconciliation failed: {str(e)}")
+        # Catch-all for unexpected errors
+        error_message = f"Unexpected reconciliation error: {str(e)}"
+        if run_id:
+            recovery = exception_handler.handle_database_error(
+                run_id=run_id,
+                error_message=error_message
+            )
+            audit_trail.log_exception(run_id, "UNEXPECTED_RECONCILIATION_ERROR", error_message)
+            audit_trail.log_reconciliation_event(
+                run_id=run_id,
+                event="failed",
+                user_id="SYSTEM",
+                error=error_message
+            )
+        else:
+            logger.error(f"Reconciliation failed before run_id assignment: {error_message}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Reconciliation failed: {error_message}. Please check logs and retry."
+        )
 
 # ============================================================================
 # CHATBOT ENDPOINTS (Integrated)
@@ -668,6 +1473,121 @@ async def get_historical_summary():
         # Sort by month
         historical_data.sort(key=lambda x: x["month"])
         return historical_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# ROLLBACK ENDPOINTS (PHASE 3)
+# ============================================================================
+
+@app.post("/api/v1/rollback/ingestion")
+async def ingestion_rollback(run_id: str, filename: str, error: str):
+    """
+    Rollback specific file that failed validation during upload
+    Removes only the failed file, preserves other uploaded files
+    
+    Args:
+        run_id: Current run identifier
+        filename: Name of the file that failed validation
+        error: Description of the validation error
+    """
+    try:
+        can_roll, msg = rollback_manager.can_rollback(run_id, RollbackLevel.INGESTION)
+        if not can_roll:
+            raise HTTPException(status_code=400, detail=msg)
+        
+        result = rollback_manager.ingestion_rollback(run_id, filename, error)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/rollback/mid-recon")
+async def mid_recon_rollback(run_id: str, error: str, 
+                            affected_transactions: Optional[List[str]] = Query(None)):
+    """
+    Rollback uncommitted transactions during reconciliation
+    Triggered by critical errors (DB disconnection, crashes, etc.)
+    
+    Args:
+        run_id: Current run identifier
+        error: Description of the error
+        affected_transactions: List of transaction IDs to rollback
+    """
+    try:
+        can_roll, msg = rollback_manager.can_rollback(run_id, RollbackLevel.MID_RECON)
+        if not can_roll:
+            raise HTTPException(status_code=400, detail=msg)
+        
+        result = rollback_manager.mid_recon_rollback(run_id, error, affected_transactions)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/rollback/cycle-wise")
+async def cycle_wise_rollback(run_id: str, cycle_id: str):
+    """
+    Rollback specific NPCI cycle for re-processing
+    Does not affect other cycles or previously matched transactions
+    NPCI cycles: 1A, 1B, 1C, 2A, 2B, 2C, 3A, 3B, 3C, 4
+    
+    Args:
+        run_id: Current run identifier
+        cycle_id: NPCI cycle to rollback (e.g., '1C', '3B')
+    """
+    try:
+        # Validate cycle ID format
+        valid_cycles = ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C', '4']
+        if cycle_id not in valid_cycles:
+            raise HTTPException(status_code=400, detail=f"Invalid cycle ID. Must be one of {valid_cycles}")
+        
+        can_roll, msg = rollback_manager.can_rollback(run_id, RollbackLevel.CYCLE_WISE)
+        if not can_roll:
+            raise HTTPException(status_code=400, detail=msg)
+        
+        result = rollback_manager.cycle_wise_rollback(run_id, cycle_id)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/rollback/accounting")
+async def accounting_rollback(run_id: str, reason: str,
+                             voucher_ids: Optional[List[str]] = Query(None)):
+    """
+    Rollback voucher generation when CBS upload fails
+    Resets status from 'settled/voucher generated' to 'matched/pending'
+    
+    Args:
+        run_id: Current run identifier
+        reason: Reason for rollback (e.g., 'CBS upload failure')
+        voucher_ids: List of voucher IDs to rollback
+    """
+    try:
+        can_roll, msg = rollback_manager.can_rollback(run_id, RollbackLevel.ACCOUNTING)
+        if not can_roll:
+            raise HTTPException(status_code=400, detail=msg)
+        
+        result = rollback_manager.accounting_rollback(run_id, reason, voucher_ids)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/rollback/history")
+async def get_rollback_history(run_id: Optional[str] = Query(None)):
+    """
+    Get rollback history, optionally filtered by run_id
+    
+    Args:
+        run_id: Optional - Filter history by specific run
+    """
+    try:
+        history = rollback_manager.get_rollback_history(run_id)
+        return {
+            "status": "success",
+            "count": len(history),
+            "history": history
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

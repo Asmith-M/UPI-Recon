@@ -14,6 +14,7 @@ import Enquiry from "./pages/Enquiry";
 import ForceMatch from "./pages/ForceMatch";
 import AutoMatch from "./pages/AutoMatch";
 import Rollback from "./pages/Rollback";
+import Audit from "./pages/Audit";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -35,6 +36,7 @@ const App = () => (
           <Route path="/rollback" element={<Layout><Rollback /></Layout>} />
           <Route path="/enquiry" element={<Layout><Enquiry /></Layout>} />
           <Route path="/reports" element={<Layout><Reports /></Layout>} />
+          <Route path="/audit" element={<Layout><Audit /></Layout>} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>

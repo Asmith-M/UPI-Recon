@@ -191,92 +191,143 @@ export default function Dashboard() {
           <div className="grid grid-cols-3 gap-6">
             <Card className="col-span-2 shadow-lg">
               <CardHeader>
-                <CardTitle>Analytics Overview</CardTitle>
-                <p className="text-sm text-muted-foreground">Swipe or use arrows to view different charts</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Analytics Overview</CardTitle>
+                    <p className="text-sm text-muted-foreground">Multiple chart views of reconciliation data</p>
+                  </div>
+                  <Select defaultValue="transaction">
+                    <SelectTrigger className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="transaction">Transaction Analysis</SelectItem>
+                      <SelectItem value="monthly">Monthly Trend</SelectItem>
+                      <SelectItem value="comparison">Comparison View</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </CardHeader>
-              <CardContent className="px-4">
-                <Carousel className="w-full max-w-full">
-                  <CarouselContent className="-ml-2">
-                    {/* Pie Chart */}
-                    <CarouselItem className="pl-2">
-                      <div className="p-1">
-                        <h3 className="text-center font-semibold mb-2 text-foreground">Transaction Distribution</h3>
-                        <ResponsiveContainer width="100%" height={260}>
-                          <PieChart>
-                            <Pie
-                              data={pieData.length > 0 ? pieData : [{ name: "No Data", value: 1, color: "#ccc" }]}
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={50}
-                              outerRadius={90}
-                              paddingAngle={5}
-                              dataKey="value"
-                              label={pieData.length > 0 ? ({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%` : undefined}
-                            >
-                              {(pieData.length > 0 ? pieData : [{ name: "No Data", value: 1, color: "#ccc" }]).map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={entry.color} />
-                              ))}
-                            </Pie>
-                            <Tooltip />
-                            {pieData.length > 0 && <Legend />}
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </CarouselItem>
+              <CardContent className="px-6 pb-6">
+                <div className="w-full mx-auto px-4 py-2">
+                  <Carousel opts={{ align: "start" }} className="w-full">
+                    <CarouselContent className="-ml-2 md:-ml-4">
+                      {/* Pie Chart */}
+                      <CarouselItem className="pl-2 md:pl-4 md:basis-full">
+                        <div className="p-4">
+                          <h3 className="text-center font-semibold mb-2 text-foreground text-sm">Transaction Distribution</h3>
+                          <ResponsiveContainer width="100%" height={280}>
+                            <PieChart>
+                              <Pie
+                                data={pieData.length > 0 ? pieData : [{ name: "No Data", value: 1, color: "#ccc" }]}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={50}
+                                outerRadius={85}
+                                paddingAngle={2}
+                                dataKey="value"
+                                label={pieData.length > 0 ? ({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%` : undefined}
+                              >
+                                {(pieData.length > 0 ? pieData : [{ name: "No Data", value: 1, color: "#ccc" }]).map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={entry.color} />
+                                ))}
+                              </Pie>
+                              <Tooltip formatter={(value) => value.toLocaleString()} />
+                              {pieData.length > 0 && <Legend verticalAlign="bottom" height={20} />}
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CarouselItem>
 
-                    {/* Bar Chart */}
-                    <CarouselItem className="pl-2">
-                      <div className="p-1">
-                        <h3 className="text-center font-semibold mb-2 text-foreground">Monthly Comparison</h3>
-                        <ResponsiveContainer width="100%" height={260}>
-                          <BarChart data={historicalData && historicalData.length > 0 ? historicalData : []}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="month" />
-                            <YAxis />
-                            <Tooltip />
-                            <Legend />
-                            <Bar dataKey="allTxns" fill="hsl(201, 78%, 70%)" name="All Txns" radius={[4, 4, 0, 0]} />
-                            <Bar dataKey="reconciled" fill="hsl(142, 76%, 36%)" name="Reconciled" radius={[4, 4, 0, 0]} />
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </CarouselItem>
+                      {/* Bar Chart */}
+                      <CarouselItem className="pl-2 md:pl-4 md:basis-full">
+                        <div className="p-4">
+                          <h3 className="text-center font-semibold mb-2 text-foreground text-sm">Monthly Comparison</h3>
+                          <ResponsiveContainer width="100%" height={280}>
+                            <BarChart data={historicalData && historicalData.length > 0 ? historicalData : []}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                              <YAxis tick={{ fontSize: 12 }} />
+                              <Tooltip 
+                                formatter={(value) => value.toLocaleString()}
+                                contentStyle={{ backgroundColor: "var(--color-background)", border: "1px solid var(--color-border)", borderRadius: "4px" }}
+                              />
+                              <Legend wrapperStyle={{ fontSize: "12px" }} />
+                              <Bar dataKey="allTxns" fill="hsl(201, 78%, 70%)" name="All Txns" radius={[4, 4, 0, 0]} />
+                              <Bar dataKey="reconciled" fill="hsl(142, 76%, 36%)" name="Reconciled" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CarouselItem>
 
-                    {/* Line Chart (Trend) */}
-                    <CarouselItem className="pl-2">
-                      <div className="p-1">
-                        <h3 className="text-center font-semibold mb-2 text-foreground">Monthly Trend</h3>
-                        <ResponsiveContainer width="100%" height={260}>
-                          <LineChart data={historicalData && historicalData.length > 0 ? historicalData : []}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="month" />
-                            <YAxis />
-                            <Tooltip />
-                            <Legend />
-                            <Line
-                              type="monotone"
-                              dataKey="allTxns"
-                              stroke="hsl(201, 78%, 70%)"
-                              strokeWidth={2}
-                              name="All Txns"
-                              dot={{ fill: "hsl(201, 78%, 70%)" }}
-                            />
-                            <Line
-                              type="monotone"
-                              dataKey="reconciled"
-                              stroke="hsl(142, 76%, 36%)"
-                              strokeWidth={2}
-                              name="Reconciled"
-                              dot={{ fill: "hsl(142, 76%, 36%)" }}
-                            />
-                          </LineChart>
-                        </ResponsiveContainer>
+                      {/* Line Chart (Trend) */}
+                      <CarouselItem className="pl-2 md:pl-4 md:basis-full">
+                        <div className="p-4">
+                          <h3 className="text-center font-semibold mb-2 text-foreground text-sm">Reconciliation Trend</h3>
+                          <ResponsiveContainer width="100%" height={280}>
+                            <LineChart data={historicalData && historicalData.length > 0 ? historicalData : []}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                              <YAxis tick={{ fontSize: 12 }} />
+                              <Tooltip 
+                                formatter={(value) => value.toLocaleString()}
+                                contentStyle={{ backgroundColor: "var(--color-background)", border: "1px solid var(--color-border)", borderRadius: "4px" }}
+                              />
+                              <Legend wrapperStyle={{ fontSize: "12px" }} />
+                              <Line
+                                type="monotone"
+                                dataKey="allTxns"
+                                stroke="hsl(201, 78%, 70%)"
+                                strokeWidth={2}
+                                name="All Txns"
+                                dot={{ fill: "hsl(201, 78%, 70%)", r: 3 }}
+                                activeDot={{ r: 5 }}
+                              />
+                              <Line
+                                type="monotone"
+                                dataKey="reconciled"
+                                stroke="hsl(142, 76%, 36%)"
+                                strokeWidth={2}
+                                name="Reconciled"
+                                dot={{ fill: "hsl(142, 76%, 36%)", r: 3 }}
+                                activeDot={{ r: 5 }}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CarouselItem>
+
+                      {/* Success Rate Chart */}
+                      <CarouselItem className="pl-2 md:pl-4 md:basis-full">
+                        <div className="p-4">
+                          <h3 className="text-center font-semibold mb-2 text-foreground text-sm">Success Rate Trend</h3>
+                          <ResponsiveContainer width="100%" height={280}>
+                            <BarChart data={historicalData && historicalData.length > 0 ? historicalData.map(d => ({
+                              ...d,
+                              successRate: d.allTxns > 0 ? Math.round((d.reconciled / d.allTxns) * 100) : 0
+                            })) : []}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                              <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
+                              <Tooltip 
+                                formatter={(value) => `${value}%`}
+                                contentStyle={{ backgroundColor: "var(--color-background)", border: "1px solid var(--color-border)", borderRadius: "4px" }}
+                              />
+                              <Bar dataKey="successRate" fill="hsl(142, 76%, 36%)" name="Success Rate %" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CarouselItem>
+                    </CarouselContent>
+                    <div className="flex items-center justify-center gap-x-0 mt-6">
+                      <CarouselPrevious className="relative position-static hover:bg-brand-blue hover:text-white transition-colors -mr-2" />
+                      <div className="text-center text-xs text-muted-foreground flex-1">
+                        Swipe to view charts
                       </div>
-                    </CarouselItem>
-                  </CarouselContent>
-                  <CarouselPrevious className="left-2" />
-                  <CarouselNext className="right-2" />
-                </Carousel>
+                      <CarouselNext className="relative position-static hover:bg-brand-blue hover:text-white transition-colors -ml-2" />
+                    </div>
+                  </Carousel>
+                </div>
               </CardContent>
             </Card>
 
@@ -396,67 +447,142 @@ export default function Dashboard() {
 
         {/* Today's Breaks Tab */}
         <TabsContent value="breaks" className="space-y-6 mt-6">
+          <Card className="shadow-lg bg-gradient-to-r from-yellow-50 to-card border-yellow-200">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-lg">Today's Reconciliation Breaks</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Transactions from today's reconciliation that require attention
+                  </p>
+                </div>
+                <div className="text-right">
+                  <div className="text-3xl font-bold text-yellow-600">
+                    {summaryData?.unmatched || 0}
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Breaks to resolve
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {summaryData && summaryData.unmatched > 0 ? (
             <>
+              {/* Break Analysis Cards */}
+              <div className="grid grid-cols-4 gap-4">
+                <Card className="shadow-lg">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Total Breaks</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-bold text-yellow-600">
+                      {summaryData.unmatched}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">Requiring action</p>
+                  </CardContent>
+                </Card>
+                
+                <Card className="shadow-lg bg-gradient-to-br from-orange-50 to-card">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Partial Matches</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-bold text-orange-600">
+                      {Math.floor(summaryData.unmatched * 0.6)}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">Can be force matched</p>
+                  </CardContent>
+                </Card>
+                
+                <Card className="shadow-lg bg-gradient-to-br from-red-50 to-card">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Orphan Records</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-bold text-red-600">
+                      {Math.floor(summaryData.unmatched * 0.4)}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">One-sided transactions</p>
+                  </CardContent>
+                </Card>
+
+                <Card className="shadow-lg bg-gradient-to-br from-blue-50 to-card">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Success Rate</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-bold text-blue-600">
+                      {summaryData.total_transactions > 0 ? Math.round((summaryData.matched / summaryData.total_transactions) * 100) : 0}%
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">Reconciliation rate</p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Break Distribution Chart */}
               <Card className="shadow-lg">
                 <CardHeader>
-                  <CardTitle>Today's Unmatched Transactions</CardTitle>
-                  <p className="text-sm text-muted-foreground">
-                    Transactions that require attention from today's reconciliation run
-                  </p>
+                  <CardTitle>Break Distribution</CardTitle>
+                  <p className="text-sm text-muted-foreground">Today's unmatched transaction breakdown</p>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-3 gap-4">
-                    <Card className="bg-yellow-50">
-                      <CardContent className="pt-6">
-                        <div className="text-2xl font-bold text-yellow-600">
-                          {summaryData.unmatched}
-                        </div>
-                        <div className="text-sm text-muted-foreground">Total Breaks</div>
-                      </CardContent>
-                    </Card>
-                    
-                    <Card className="bg-orange-50">
-                      <CardContent className="pt-6">
-                        <div className="text-2xl font-bold text-orange-600">
-                          {Math.floor(summaryData.unmatched * 0.6)}
-                        </div>
-                        <div className="text-sm text-muted-foreground">Partial Matches</div>
-                      </CardContent>
-                    </Card>
-                    
-                    <Card className="bg-red-50">
-                      <CardContent className="pt-6">
-                        <div className="text-2xl font-bold text-red-600">
-                          {Math.floor(summaryData.unmatched * 0.4)}
-                        </div>
-                        <div className="text-sm text-muted-foreground">Orphan Records</div>
-                      </CardContent>
-                    </Card>
-                  </div>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <PieChart>
+                      <Pie
+                        data={[
+                          { name: "Partial Matches", value: Math.floor(summaryData.unmatched * 0.6), color: "hsl(39, 100%, 50%)" },
+                          { name: "Orphan Records", value: Math.floor(summaryData.unmatched * 0.4), color: "hsl(0, 84%, 60%)" }
+                        ]}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={50}
+                        outerRadius={90}
+                        paddingAngle={5}
+                        dataKey="value"
+                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      >
+                        <Cell fill="hsl(39, 100%, 50%)" />
+                        <Cell fill="hsl(0, 84%, 60%)" />
+                      </Pie>
+                      <Tooltip />
+                      <Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
 
-                  <div className="mt-6 flex justify-center">
-                    <Button 
-                      className="rounded-full bg-brand-blue hover:bg-brand-mid"
-                      onClick={() => window.location.href = '/unmatched'}
-                    >
-                      View Unmatched Dashboard
-                    </Button>
-                  </div>
+              {/* Action Buttons */}
+              <Card className="shadow-lg">
+                <CardHeader>
+                  <CardTitle>Next Steps</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Button 
+                    className="w-full rounded-full bg-brand-blue hover:bg-brand-mid"
+                    onClick={() => window.location.href = '/unmatched'}
+                  >
+                    View Unmatched Transactions
+                  </Button>
+                  <Button 
+                    variant="outline"
+                    className="w-full rounded-full"
+                    onClick={() => window.location.href = '/force-match'}
+                  >
+                    Use Force Matching Tool
+                  </Button>
                 </CardContent>
               </Card>
             </>
           ) : (
             <Card className="shadow-lg">
-              <CardHeader>
-                <CardTitle>Today's Breaks</CardTitle>
-              </CardHeader>
-              <CardContent>
+              <CardContent className="pt-6">
                 <div className="text-center py-8">
                   <CheckCircle className="w-16 h-16 mx-auto text-green-500 mb-4" />
-                  <p className="text-lg font-semibold text-green-600">No Breaks Today!</p>
+                  <p className="text-lg font-semibold text-green-600">Perfect Reconciliation!</p>
                   <p className="text-muted-foreground mt-2">
-                    All transactions have been successfully reconciled.
+                    All transactions have been successfully reconciled with zero breaks.
                   </p>
                 </div>
               </CardContent>

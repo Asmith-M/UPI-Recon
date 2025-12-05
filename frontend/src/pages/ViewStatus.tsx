@@ -25,20 +25,16 @@ export default function ViewStatus() {
     try {
       setLoading(true);
       
-      // Try to get summary first to check if files are uploaded
-      const summary = await apiClient.getSummary();
+      // Try to get upload metadata first to see which files were actually uploaded
+      const metadata = await apiClient.getUploadMetadata();
+      const uploadedFiles = metadata.uploaded_files || [];
       
-      // If we have summary data, files were successfully uploaded
-      if (summary && summary.run_id) {
-        const rawData = await apiClient.getRawData();
-        const transformedData = transformRawDataToUploadStatus(rawData.data, true);
-        setUploadStatusData(transformedData);
-      } else {
-        throw new Error("No data");
-      }
+      // Transform the uploaded files list into the status display
+      const transformedData = transformRawDataToUploadStatus(uploadedFiles);
+      setUploadStatusData(transformedData);
     } catch (error: any) {
-      // If no reconciliation data, show empty state with proper structure
-      console.log("No reconciliation data yet or error:", error.message);
+      // If no metadata yet, show empty state with proper structure
+      console.log("No upload metadata yet:", error.message);
       setUploadStatusData([
         {
           section: "CBS/ GL File",
@@ -68,44 +64,31 @@ export default function ViewStatus() {
     }
   };
 
-  const transformRawDataToUploadStatus = (rawData: any, hasData: boolean = false) => {
-    // Check if we have actual data
-    const hasRecords = rawData && Object.keys(rawData).length > 0;
-    
-    // Count records by checking if CBS/Switch/NPCI data exists in records
-    let cbsCount = 0;
-    let switchCount = 0;
-    let npciCount = 0;
-    
-    if (hasRecords) {
-      Object.values(rawData).forEach((record: any) => {
-        if (record.cbs) cbsCount++;
-        if (record.switch) switchCount++;
-        if (record.npci) npciCount++;
-      });
-    }
+  const transformRawDataToUploadStatus = (uploadedFiles: string[]) => {
+    // Check which files were actually uploaded by looking at the uploaded_files array
+    const has = (fileType: string) => uploadedFiles.includes(fileType) ? 1 : 0;
 
     return [
       {
         section: "CBS/ GL File",
         files: [
-          { name: "CBS Inward File", required: 1, uploaded: hasData ? 1 : 0, success: cbsCount > 0 ? 1 : 0, error: 0 },
-          { name: "CBS Outward File", required: 1, uploaded: hasData ? 1 : 0, success: cbsCount > 0 ? 1 : 0, error: 0 },
-          { name: "Switch File", required: 1, uploaded: hasData ? 1 : 0, success: switchCount > 0 ? 1 : 0, error: 0 },
+          { name: "CBS Inward File", required: 1, uploaded: has('cbs_inward'), success: has('cbs_inward'), error: 0 },
+          { name: "CBS Outward File", required: 1, uploaded: has('cbs_outward'), success: has('cbs_outward'), error: 0 },
+          { name: "Switch File", required: 1, uploaded: has('switch'), success: has('switch'), error: 0 },
         ],
       },
       {
         section: "NPCI Files",
         files: [
-          { name: "NPCI Inward Raw", required: 1, uploaded: hasData ? 1 : 0, success: npciCount > 0 ? 1 : 0, error: 0 },
-          { name: "NPCI Outward Raw", required: 1, uploaded: hasData ? 1 : 0, success: npciCount > 0 ? 1 : 0, error: 0 },
+          { name: "NPCI Inward Raw", required: 1, uploaded: has('npci_inward'), success: has('npci_inward'), error: 0 },
+          { name: "NPCI Outward Raw", required: 1, uploaded: has('npci_outward'), success: has('npci_outward'), error: 0 },
         ],
       },
       {
         section: "Other Files",
         files: [
-          { name: "NTSL", required: 1, uploaded: hasData ? 1 : 0, success: hasData ? 1 : 0, error: 0 },
-          { name: "Adjustment File", required: 0, uploaded: hasData ? 1 : 0, success: hasData ? 1 : 0, error: 0 },
+          { name: "NTSL", required: 1, uploaded: has('ntsl'), success: has('ntsl'), error: 0 },
+          { name: "Adjustment File", required: 0, uploaded: has('adjustment'), success: has('adjustment'), error: 0 },
         ],
       },
     ];

@@ -3,13 +3,17 @@ import os
 from typing import Dict, List, Tuple
 import json
 from datetime import datetime
+from loguru import logger
+from settlement_engine import SettlementEngine
 
 class ReconciliationEngine:
-    def __init__(self):
+    def __init__(self, output_dir: str = "./data/output"):
+        self.output_dir = output_dir
         self.matched_records = []
         self.partial_match_records = []
         self.orphan_records = []
         self.exceptions = []
+        self.settlement_engine = SettlementEngine(output_dir)
     
     def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
         """Handle missing values in the dataframe"""
@@ -40,122 +44,193 @@ class ReconciliationEngine:
         return df
 
     def reconcile(self, dataframes: List[pd.DataFrame]) -> Dict:
-        """Main reconciliation logic - RRN + Amount + Date matching"""
-        
+        """Main reconciliation logic - RRN + Amount + Date matching with comprehensive error handling"""
+
+        logger.info(f"Starting reconciliation with {len(dataframes)} dataframes")
+
         # Clear previous counts for fresh run
         self.matched_records = []
         self.partial_match_records = []
         self.orphan_records = []
         self.exceptions = []
-        
-        # Handle missing values for each dataframe
-        processed_dataframes = []
-        for df in dataframes:
-            df = self._handle_missing_values(df)
-            # Remove rows where RRN is empty (can't match without RRN)
-            df = df[df['RRN'] != ''].reset_index(drop=True)
-            if not df.empty:
-                processed_dataframes.append(df)
-        
-        if not processed_dataframes:
-            return {}
-        
-        # Combine all dataframes
-        combined_df = pd.concat(processed_dataframes, ignore_index=True)
-        
-        # Remove rows where RRN is empty
-        combined_df = combined_df[combined_df['RRN'] != ''].reset_index(drop=True)
-        
-        if combined_df.empty:
-            return {}
-        
-        # Group by RRN
-        grouped = combined_df.groupby('RRN')
-        
-        results = {}
-        
-        for rrn, group in grouped:
-            # Get unique sources for this RRN
-            sources = set(group['Source'].tolist())
-            
-            # Create record structure
-            record = {
-                'cbs': None,
-                'switch': None, 
-                'npci': None,
-                'status': 'UNKNOWN'
-            }
-            
-            # Populate data by source
-            for _, row in group.iterrows():
-                source = row['Source'].lower()
-                if source in ['cbs', 'switch', 'npci']:
-                    record[source] = {
-                        'amount': row['Amount'],
-                        'date': row['Tran_Date'],
-                        'dr_cr': row.get('Dr_Cr', ''),
-                        'rc': row.get('RC', ''),
-                        'tran_type': row.get('Tran_Type', '')
-                    }
-            
-            # Extract amounts and dates from the populated records
-            amounts = []
-            dates = []
-            
-            if record['cbs']:
-                amounts.append(record['cbs']['amount'])
-                dates.append(record['cbs']['date'])
-            if record['switch']:
-                amounts.append(record['switch']['amount'])
-                dates.append(record['switch']['date'])
-            if record['npci']:
-                amounts.append(record['npci']['amount'])
-                dates.append(record['npci']['date'])
-            
-            # Create sets for comparison (only from actual records, not duplicates)
-            amount_set = set(amounts)
-            date_set = set(dates)
-            
-            # Determine status based on presence in systems AND data consistency
-            num_sources = len(sources)
-            amounts_match = len(amount_set) == 1
-            dates_match = len(date_set) == 1
-            
-            if num_sources == 3:
-                # All 3 systems have the RRN
-                if amounts_match and dates_match:
-                    # Perfect match: all 3 systems agree on amount and date
-                    record['status'] = 'MATCHED'
-                    self.matched_records.append(rrn)
-                else:
-                    # Mismatch: all 3 systems have it but amounts/dates differ
-                    record['status'] = 'MISMATCH'
-                    self.exceptions.append(rrn)
-            elif num_sources == 2:
-                # 2 systems have the RRN
-                if amounts_match and dates_match:
-                    # Partial match with consistent data
-                    record['status'] = 'PARTIAL_MATCH'
-                    self.partial_match_records.append(rrn)
-                else:
-                    # Partial match but data doesn't agree
-                    record['status'] = 'PARTIAL_MISMATCH'
-                    self.exceptions.append(rrn)
-            elif num_sources == 1:
-                # Only 1 system has the RRN
-                record['status'] = 'ORPHAN'
-                self.orphan_records.append(rrn)
-            else:
-                # This shouldn't happen, but handle it
-                record['status'] = 'UNKNOWN'
-                self.exceptions.append(rrn)
-            
-            results[rrn] = record
-        
-        # Combine unmatched records (partial matches + orphans)
-        self.unmatched_records = self.partial_match_records + self.orphan_records
-        
-        return results
+
+        try:
+            # Phase 1: Data preprocessing with validation
+            processed_dataframes = []
+            for i, df in enumerate(dataframes):
+                try:
+                    # Validate dataframe structure
+                    required_cols = ['RRN', 'Amount', 'Tran_Date', 'Source']
+                    missing_cols = [col for col in required_cols if col not in df.columns]
+                    if missing_cols:
+                        raise ValueError(f"Dataframe {i} missing required columns: {missing_cols}")
+
+                    # Handle missing values
+                    df = self._handle_missing_values(df)
+
+                    # Remove rows where RRN is empty (can't match without RRN)
+                    original_count = len(df)
+                    df = df[df['RRN'] != ''].reset_index(drop=True)
+                    removed_count = original_count - len(df)
+
+                    if removed_count > 0:
+                        logger.warning(f"Removed {removed_count} rows with empty RRN from dataframe {i}")
+
+                    if not df.empty:
+                        processed_dataframes.append(df)
+                        logger.info(f"Processed dataframe {i}: {len(df)} valid records")
+                    else:
+                        logger.warning(f"Dataframe {i} became empty after preprocessing")
+
+                except Exception as df_error:
+                    logger.error(f"Error preprocessing dataframe {i}: {str(df_error)}")
+                    raise ValueError(f"Data preprocessing failed for dataframe {i}: {str(df_error)}")
+
+            if not processed_dataframes:
+                logger.error("No valid dataframes after preprocessing")
+                raise ValueError("No valid data found after preprocessing all dataframes")
+
+            # Phase 2: Data combination with validation
+            try:
+                combined_df = pd.concat(processed_dataframes, ignore_index=True)
+                logger.info(f"Combined dataframe has {len(combined_df)} total records")
+
+                # Final cleanup - remove any remaining rows with empty RRN
+                original_count = len(combined_df)
+                combined_df = combined_df[combined_df['RRN'] != ''].reset_index(drop=True)
+                removed_count = original_count - len(combined_df)
+
+                if removed_count > 0:
+                    logger.warning(f"Removed {removed_count} additional rows with empty RRN during combination")
+
+                if combined_df.empty:
+                    logger.error("Combined dataframe is empty after final cleanup")
+                    raise ValueError("No valid transaction records found after data combination")
+
+            except Exception as combine_error:
+                logger.error(f"Error combining dataframes: {str(combine_error)}")
+                raise ValueError(f"Data combination failed: {str(combine_error)}")
+
+            # Phase 3: Reconciliation logic with error handling
+            results = {}
+            try:
+                # Group by RRN
+                grouped = combined_df.groupby('RRN')
+                total_groups = len(grouped)
+
+                logger.info(f"Processing {total_groups} unique RRN groups")
+
+                for rrn, group in grouped:
+                    try:
+                        # Get unique sources for this RRN
+                        sources = set(group['Source'].tolist())
+
+                        # Create record structure
+                        record = {
+                            'cbs': None,
+                            'switch': None,
+                            'npci': None,
+                            'status': 'UNKNOWN'
+                        }
+
+                        # Populate data by source
+                        for _, row in group.iterrows():
+                            source = row['Source'].lower()
+                            if source in ['cbs', 'switch', 'npci']:
+                                record[source] = {
+                                    'amount': row['Amount'],
+                                    'date': row['Tran_Date'],
+                                    'dr_cr': row.get('Dr_Cr', ''),
+                                    'rc': row.get('RC', ''),
+                                    'tran_type': row.get('Tran_Type', '')
+                                }
+
+                        # Extract amounts and dates from the populated records
+                        amounts = []
+                        dates = []
+
+                        if record['cbs']:
+                            amounts.append(record['cbs']['amount'])
+                            dates.append(record['cbs']['date'])
+                        if record['switch']:
+                            amounts.append(record['switch']['amount'])
+                            dates.append(record['switch']['date'])
+                        if record['npci']:
+                            amounts.append(record['npci']['amount'])
+                            dates.append(record['npci']['date'])
+
+                        # Create sets for comparison (only from actual records, not duplicates)
+                        amount_set = set(amounts)
+                        date_set = set(dates)
+
+                        # Determine status based on presence in systems AND data consistency
+                        num_sources = len(sources)
+                        amounts_match = len(amount_set) == 1
+                        dates_match = len(date_set) == 1
+
+                        if num_sources == 3:
+                            # All 3 systems have the RRN
+                            if amounts_match and dates_match:
+                                # Perfect match: all 3 systems agree on amount and date
+                                record['status'] = 'MATCHED'
+                                self.matched_records.append(rrn)
+                            else:
+                                # Mismatch: all 3 systems have it but amounts/dates differ
+                                record['status'] = 'MISMATCH'
+                                self.exceptions.append(rrn)
+                        elif num_sources == 2:
+                            # 2 systems have the RRN
+                            if amounts_match and dates_match:
+                                # Partial match with consistent data
+                                record['status'] = 'PARTIAL_MATCH'
+                                self.partial_match_records.append(rrn)
+                            else:
+                                # Partial match but data doesn't agree
+                                record['status'] = 'PARTIAL_MISMATCH'
+                                self.exceptions.append(rrn)
+                        elif num_sources == 1:
+                            # Only 1 system has the RRN
+                            record['status'] = 'ORPHAN'
+                            self.orphan_records.append(rrn)
+                        else:
+                            # This shouldn't happen, but handle it
+                            record['status'] = 'UNKNOWN'
+                            self.exceptions.append(rrn)
+
+                        results[rrn] = record
+
+                    except Exception as rrn_error:
+                        logger.error(f"Error processing RRN {rrn}: {str(rrn_error)}")
+                        # Add to exceptions and continue processing other RRNs
+                        self.exceptions.append(rrn)
+                        results[rrn] = {
+                            'cbs': None, 'switch': None, 'npci': None,
+                            'status': 'PROCESSING_ERROR',
+                            'error': str(rrn_error)
+                        }
+
+            except Exception as logic_error:
+                logger.error(f"Critical error in reconciliation logic: {str(logic_error)}")
+                raise ValueError(f"Reconciliation logic failed: {str(logic_error)}")
+
+            # Phase 4: Final validation and summary
+            # Combine unmatched records (partial matches + orphans)
+            self.unmatched_records = self.partial_match_records + self.orphan_records
+
+            # Log summary
+            logger.info(f"Reconciliation completed: {len(results)} total RRNs processed")
+            logger.info(f"Results: {len(self.matched_records)} matched, {len(self.partial_match_records)} partial, {len(self.orphan_records)} orphan, {len(self.exceptions)} exceptions")
+
+            if not results:
+                logger.warning("Reconciliation completed but no results generated")
+                raise ValueError("Reconciliation completed but no transaction records were processed")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Reconciliation failed with error: {str(e)}")
+            # Re-raise with context
+            raise ValueError(f"Reconciliation process failed: {str(e)}")
     
     def force_match_rrn(self, rrn: str, source1: str, source2: str, results: Dict):
         """Force match a specific RRN between two sources"""

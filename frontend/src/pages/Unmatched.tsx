@@ -15,8 +15,11 @@ export default function Unmatched() {
   const [unmatchedCBS, setUnmatchedCBS] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
-  const [dateFilter, setDateFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [amountFrom, setAmountFrom] = useState("");
+  const [amountTo, setAmountTo] = useState("");
 
   useEffect(() => {
     fetchUnmatchedData();
@@ -59,7 +62,8 @@ export default function Unmatched() {
           source: sourceName,
           rrn: rrn,
           drCr: sourceData.dr_cr || "Dr",
-          amount: `₹${sourceData.amount?.toLocaleString() || 0}`,
+          amount: sourceData.amount || 0,
+          amountFormatted: `₹${sourceData.amount?.toLocaleString() || 0}`,
           tranDate: sourceData.date || new Date().toLocaleDateString(),
           rc: sourceData.rc || "00",
           type: sourceData.tran_type || "UPI"
@@ -94,11 +98,65 @@ export default function Unmatched() {
     return { npci, cbs };
   };
 
-  const handleApplyFilters = () => {
-    // Filters are applied dynamically when user types or selects
+  // Helper function to parse and format dates for comparison
+  const parseDate = (dateString: string): Date | null => {
+    if (!dateString) return null;
+    // Try parsing DD/MM/YYYY format
+    const parts = dateString.split('/');
+    if (parts.length === 3) {
+      const date = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+      return isNaN(date.getTime()) ? null : date;
+    }
+    // Try YYYY-MM-DD format
+    const date = new Date(dateString);
+    return isNaN(date.getTime()) ? null : date;
+  };
+
+  // Helper function to check if transaction matches all filters
+  const matchesFilters = (row: any): boolean => {
+    // RRN search
+    if (searchTerm && !row.rrn.toUpperCase().includes(searchTerm.toUpperCase())) {
+      return false;
+    }
+
+    // Date range filter
+    if (dateFrom || dateTo) {
+      const tranDate = parseDate(row.tranDate);
+      const fromDate = dateFrom ? new Date(dateFrom) : null;
+      const toDate = dateTo ? new Date(dateTo) : null;
+
+      if (tranDate) {
+        if (fromDate && tranDate < fromDate) return false;
+        if (toDate && tranDate > toDate) return false;
+      }
+    }
+
+    // Transaction type filter
+    if (typeFilter !== "all" && row.type.toLowerCase() !== typeFilter.toLowerCase()) {
+      return false;
+    }
+
+    // Amount range filter
+    if (amountFrom && row.amount < parseFloat(amountFrom)) {
+      return false;
+    }
+    if (amountTo && row.amount > parseFloat(amountTo)) {
+      return false;
+    }
+
+    return true;
+  };
+
+  const handleClearFilters = () => {
+    setSearchTerm("");
+    setDateFrom("");
+    setDateTo("");
+    setTypeFilter("all");
+    setAmountFrom("");
+    setAmountTo("");
     toast({
-      title: "Filters applied",
-      description: "Data filtered successfully"
+      title: "Filters cleared",
+      description: "All filters have been reset"
     });
   };
 
@@ -106,53 +164,90 @@ export default function Unmatched() {
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-foreground">Unmatched Dashboard</h1>
-        <p className="text-muted-foreground">View and manage unmatched transactions</p>
+        <p className="text-muted-foreground">View and manage unmatched transactions with advanced filtering</p>
       </div>
 
       {/* Filters */}
       <Card className="shadow-lg">
         <CardContent className="pt-6">
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <Input
-                placeholder="Search by RRN..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
+          <div className="space-y-4">
+            {/* First row: RRN search and date range */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-1">
+                <label className="text-sm font-medium mb-2 block">Search by RRN</label>
+                <Input
+                  placeholder="Enter RRN..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">Date From</label>
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">Date To</label>
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                />
+              </div>
             </div>
-            <div className="flex-1">
-              <Input
-                type="date"
-                value={dateFilter}
-                onChange={(e) => setDateFilter(e.target.value)}
-              />
+
+            {/* Second row: Transaction type and amount range */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">Transaction Type</label>
+                <Select value={typeFilter} onValueChange={setTypeFilter}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select Type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Types</SelectItem>
+                    <SelectItem value="upi">UPI</SelectItem>
+                    <SelectItem value="p2p">P2P</SelectItem>
+                    <SelectItem value="p2m">P2M</SelectItem>
+                    <SelectItem value="neft">NEFT</SelectItem>
+                    <SelectItem value="imps">IMPS</SelectItem>
+                    <SelectItem value="rtgs">RTGS</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">Amount From (₹)</label>
+                <Input
+                  type="number"
+                  placeholder="0"
+                  value={amountFrom}
+                  onChange={(e) => setAmountFrom(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">Amount To (₹)</label>
+                <Input
+                  type="number"
+                  placeholder="999999999"
+                  value={amountTo}
+                  onChange={(e) => setAmountTo(e.target.value)}
+                />
+              </div>
             </div>
-            <div className="flex-1">
-              <Select value={typeFilter} onValueChange={setTypeFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Transaction Type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Types</SelectItem>
-                  <SelectItem value="p2p">P2P</SelectItem>
-                  <SelectItem value="p2m">P2M</SelectItem>
-                </SelectContent>
-              </Select>
+
+            {/* Action buttons */}
+            <div className="flex gap-2 justify-end pt-2">
+              <Button 
+                variant="outline"
+                className="rounded-full"
+                onClick={handleClearFilters}
+              >
+                Clear All
+              </Button>
             </div>
-            <Button 
-              className="rounded-full bg-brand-blue hover:bg-brand-mid"
-              onClick={handleApplyFilters}
-              disabled={loading}
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Loading...
-                </>
-              ) : (
-                "Apply Filters"
-              )}
-            </Button>
           </div>
         </CardContent>
       </Card>
@@ -203,11 +298,7 @@ export default function Unmatched() {
                   </TableHeader>
                   <TableBody>
                     {unmatchedNPCI
-                      .filter(row => 
-                        (!searchTerm || row.rrn.includes(searchTerm)) &&
-                        (!dateFilter || row.tranDate === dateFilter) &&
-                        (typeFilter === "all" || row.type.toLowerCase() === typeFilter.toLowerCase())
-                      )
+                      .filter(matchesFilters)
                       .map((row, idx) => (
                         <TableRow key={idx}>
                           <TableCell className="font-medium">{row.source}</TableCell>
@@ -217,7 +308,7 @@ export default function Unmatched() {
                               {row.drCr}
                             </span>
                           </TableCell>
-                          <TableCell className="font-semibold">{row.amount}</TableCell>
+                          <TableCell className="font-semibold">{row.amountFormatted}</TableCell>
                           <TableCell>{row.tranDate}</TableCell>
                           <TableCell>{row.rc}</TableCell>
                           <TableCell>{row.type}</TableCell>
@@ -264,11 +355,7 @@ export default function Unmatched() {
                   </TableHeader>
                   <TableBody>
                     {unmatchedCBS
-                      .filter(row => 
-                        (!searchTerm || row.rrn.includes(searchTerm)) &&
-                        (!dateFilter || row.tranDate === dateFilter) &&
-                        (typeFilter === "all" || row.type.toLowerCase() === typeFilter.toLowerCase())
-                      )
+                      .filter(matchesFilters)
                       .map((row, idx) => (
                         <TableRow key={idx}>
                           <TableCell className="font-medium">{row.source}</TableCell>
@@ -278,7 +365,7 @@ export default function Unmatched() {
                               {row.drCr}
                             </span>
                           </TableCell>
-                          <TableCell className="font-semibold">{row.amount}</TableCell>
+                          <TableCell className="font-semibold">{row.amountFormatted}</TableCell>
                           <TableCell>{row.tranDate}</TableCell>
                           <TableCell>{row.rc}</TableCell>
                           <TableCell>{row.type}</TableCell>

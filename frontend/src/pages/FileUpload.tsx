@@ -17,31 +17,32 @@ export default function FileUpload() {
   const [cbsBalance, setCbsBalance] = useState("");
   const [switchFile, setSwitchFile] = useState<File | null>(null);
   const [npciFiles, setNpciFiles] = useState<Record<string, File>>({});
+  const [selectedCycles, setSelectedCycles] = useState<Record<string, string>>({});
   const [currentStep, setCurrentStep] = useState("cbs");
 
   const uploadMutation = useMutation({
     mutationFn: async () => {
       if (!cbsInward || !cbsOutward || !switchFile) {
-        throw new Error("Please select all required files");
+        throw new Error("Please select all required files (CBS Inward, CBS Outward, and Switch)");
       }
 
-      // Get NPCI files - for now we'll use placeholders if not all are selected
-      const npciInward = npciFiles.npci_inward || new File([], "placeholder.csv");
-      const npciOutward = npciFiles.npci_outward || new File([], "placeholder.csv");
-      const ntsl = npciFiles.ntsl || new File([], "placeholder.csv");
-      const adjustment = npciFiles.adjustment || new File([], "placeholder.csv");
-
-      const uploadResult = await apiClient.uploadFiles({
+      // Only include NPCI files that were actually selected (not placeholders)
+      const uploadData: any = {
         cbs_inward: cbsInward,
         cbs_outward: cbsOutward,
         switch: switchFile,
-        npci_inward: npciInward,
-        npci_outward: npciOutward,
-        ntsl: ntsl,
-        adjustment: adjustment,
         cbs_balance: cbsBalance,
         transaction_date: date,
-      });
+        selected_cycles: selectedCycles,
+      };
+
+      // Add optional NPCI files only if they were selected
+      if (npciFiles.npci_inward) uploadData.npci_inward = npciFiles.npci_inward;
+      if (npciFiles.npci_outward) uploadData.npci_outward = npciFiles.npci_outward;
+      if (npciFiles.ntsl) uploadData.ntsl = npciFiles.ntsl;
+      if (npciFiles.adjustment) uploadData.adjustment = npciFiles.adjustment;
+
+      const uploadResult = await apiClient.uploadFiles(uploadData);
 
       // Automatically trigger reconciliation after successful upload
       await apiClient.runReconciliation();
@@ -49,9 +50,14 @@ export default function FileUpload() {
       return uploadResult;
     },
     onSuccess: (data) => {
+      const uploadedFilesList = data.uploaded_files || ['CBS Inward', 'CBS Outward', 'Switch'];
+      const fileNames = uploadedFilesList
+        .map(f => f.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()))
+        .join(", ");
+
       toast({
         title: "Files uploaded successfully",
-        description: `Run ID: ${data.run_id}. Reconciliation in progress...`,
+        description: `Run ID: ${data.run_id}. Uploaded: ${fileNames}. Reconciliation in progress...`,
       });
       // Reset form
       setCbsInward(null);
@@ -306,23 +312,38 @@ export default function FileUpload() {
         {/* NPCI Files Tab */}
         <TabsContent value="npci">
           <div className="space-y-6 mt-6">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+              <p className="text-sm text-blue-900">
+                <strong>Note:</strong> NPCI files are optional. You can upload any combination of NPCI Inward, NPCI Outward, NTSL, and Adjustment files.
+              </p>
+            </div>
             <Card className="shadow-lg">
               <CardContent className="space-y-8 pt-8">
                 {/* NPCI Raw I/W File */}
                 <div className="space-y-3">
                   <Label className="text-base font-semibold">NPCI Raw I/W File</Label>
-                  <div className="flex gap-2">
-                    {Array.from({ length: 10 }, (_, i) => (
-                      <Button
-                        key={i}
-                        variant="outline"
-                        size="sm"
-                        className="rounded-full"
-                      >
-                        {i + 1}C
-                      </Button>
-                    ))}
+                  <div className="flex gap-2 flex-wrap">
+                    {Array.from({ length: 10 }, (_, i) => {
+                      const cycleId = `${i + 1}C`;
+                      const isSelected = selectedCycles.npci_inward === cycleId;
+                      return (
+                        <Button
+                          key={i}
+                          variant={isSelected ? "default" : "outline"}
+                          size="sm"
+                          className={`rounded-full ${isSelected ? 'bg-brand-blue text-white' : ''}`}
+                          onClick={() => setSelectedCycles(prev => ({ ...prev, npci_inward: cycleId }))}
+                        >
+                          {cycleId}
+                        </Button>
+                      );
+                    })}
                   </div>
+                  {selectedCycles.npci_inward && (
+                    <p className="text-sm text-muted-foreground">
+                      Selected Cycle: {selectedCycles.npci_inward}
+                    </p>
+                  )}
                   <Button
                     variant="outline"
                     className="rounded-full px-8"
@@ -350,18 +371,28 @@ export default function FileUpload() {
                 {/* NPCI Raw O/W File */}
                 <div className="space-y-3">
                   <Label className="text-base font-semibold">NPCI Raw O/W File</Label>
-                  <div className="flex gap-2">
-                    {Array.from({ length: 10 }, (_, i) => (
-                      <Button
-                        key={i}
-                        variant="outline"
-                        size="sm"
-                        className="rounded-full"
-                      >
-                        {i + 1}C
-                      </Button>
-                    ))}
+                  <div className="flex gap-2 flex-wrap">
+                    {Array.from({ length: 10 }, (_, i) => {
+                      const cycleId = `${i + 1}C`;
+                      const isSelected = selectedCycles.npci_outward === cycleId;
+                      return (
+                        <Button
+                          key={i}
+                          variant={isSelected ? "default" : "outline"}
+                          size="sm"
+                          className={`rounded-full ${isSelected ? 'bg-brand-blue text-white' : ''}`}
+                          onClick={() => setSelectedCycles(prev => ({ ...prev, npci_outward: cycleId }))}
+                        >
+                          {cycleId}
+                        </Button>
+                      );
+                    })}
                   </div>
+                  {selectedCycles.npci_outward && (
+                    <p className="text-sm text-muted-foreground">
+                      Selected Cycle: {selectedCycles.npci_outward}
+                    </p>
+                  )}
                   <Button
                     variant="outline"
                     className="rounded-full px-8"
@@ -389,18 +420,28 @@ export default function FileUpload() {
                 {/* NTSL File */}
                 <div className="space-y-3">
                   <Label className="text-base font-semibold">NTSL File</Label>
-                  <div className="flex gap-2">
-                    {Array.from({ length: 10 }, (_, i) => (
-                      <Button
-                        key={i}
-                        variant="outline"
-                        size="sm"
-                        className="rounded-full"
-                      >
-                        {i + 1}C
-                      </Button>
-                    ))}
+                  <div className="flex gap-2 flex-wrap">
+                    {Array.from({ length: 10 }, (_, i) => {
+                      const cycleId = `${i + 1}C`;
+                      const isSelected = selectedCycles.ntsl === cycleId;
+                      return (
+                        <Button
+                          key={i}
+                          variant={isSelected ? "default" : "outline"}
+                          size="sm"
+                          className={`rounded-full ${isSelected ? 'bg-brand-blue text-white' : ''}`}
+                          onClick={() => setSelectedCycles(prev => ({ ...prev, ntsl: cycleId }))}
+                        >
+                          {cycleId}
+                        </Button>
+                      );
+                    })}
                   </div>
+                  {selectedCycles.ntsl && (
+                    <p className="text-sm text-muted-foreground">
+                      Selected Cycle: {selectedCycles.ntsl}
+                    </p>
+                  )}
                   <Button
                     variant="outline"
                     className="rounded-full px-8"
@@ -428,18 +469,28 @@ export default function FileUpload() {
                 {/* Adjustment File */}
                 <div className="space-y-3">
                   <Label className="text-base font-semibold">Adjustment File</Label>
-                  <div className="flex gap-2">
-                    {Array.from({ length: 10 }, (_, i) => (
-                      <Button
-                        key={i}
-                        variant="outline"
-                        size="sm"
-                        className="rounded-full"
-                      >
-                        {i + 1}C
-                      </Button>
-                    ))}
+                  <div className="flex gap-2 flex-wrap">
+                    {Array.from({ length: 10 }, (_, i) => {
+                      const cycleId = `${i + 1}C`;
+                      const isSelected = selectedCycles.adjustment === cycleId;
+                      return (
+                        <Button
+                          key={i}
+                          variant={isSelected ? "default" : "outline"}
+                          size="sm"
+                          className={`rounded-full ${isSelected ? 'bg-brand-blue text-white' : ''}`}
+                          onClick={() => setSelectedCycles(prev => ({ ...prev, adjustment: cycleId }))}
+                        >
+                          {cycleId}
+                        </Button>
+                      );
+                    })}
                   </div>
+                  {selectedCycles.adjustment && (
+                    <p className="text-sm text-muted-foreground">
+                      Selected Cycle: {selectedCycles.adjustment}
+                    </p>
+                  )}
                   <Button
                     variant="outline"
                     className="rounded-full px-8"

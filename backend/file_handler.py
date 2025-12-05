@@ -2,6 +2,9 @@ import os
 import pandas as pd
 from typing import Dict, List
 from config import UPLOAD_DIR, OUTPUT_DIR, RUN_ID_FORMAT
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 class FileHandler:
     def __init__(self):
