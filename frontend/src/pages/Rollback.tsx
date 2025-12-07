@@ -4,7 +4,7 @@ import { Button } from "../components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { Loader2, RotateCcw, AlertTriangle, CheckCircle2, RefreshCw, Zap } from "lucide-react";
+import { Loader2, RotateCcw, AlertTriangle, CheckCircle2, RefreshCw, Zap, FolderOpen, BarChart3, Repeat } from "lucide-react";
 import { useToast } from "../hooks/use-toast";
 import { apiClient } from "../lib/api";
 import {
@@ -142,13 +142,16 @@ export default function Rollback() {
   const fetchRollbackHistory = async () => {
     try {
       setRollbackHistoryLoading(true);
-      const response = await fetch("/api/v1/rollback/history");
-      if (response.ok) {
-        const data = await response.json();
-        setRollbackHistory(data.history || []);
-      }
+      const data = await apiClient.getRollbackHistory();
+      setRollbackHistory(data.history || []);
     } catch (error) {
       console.error("Error fetching rollback history:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load rollback history. Please try again.",
+        variant: "destructive"
+      });
+      setRollbackHistory([]);
     } finally {
       setRollbackHistoryLoading(false);
     }
@@ -218,8 +221,19 @@ export default function Rollback() {
       }
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || "Rollback failed");
+        let errorMessage = "Rollback failed";
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          try {
+            const error = await response.json();
+            errorMessage = error.detail || "Rollback failed";
+          } catch (parseError) {
+            errorMessage = "Rollback failed with an unknown error";
+          }
+        } else {
+          errorMessage = `Rollback failed with status ${response.status}`;
+        }
+        throw new Error(errorMessage);
       }
 
       const result = await response.json();
@@ -338,9 +352,9 @@ export default function Rollback() {
             <CardContent className="space-y-6">
               {/* Run Selection */}
               <div className="space-y-2">
-                <label className="text-sm font-medium">Select Run</label>
+                <label className="text-sm font-semibold text-slate-700">Select Run</label>
                 <Select value={selectedRun} onValueChange={setSelectedRun}>
-                  <SelectTrigger>
+                  <SelectTrigger className="border-slate-300">
                     <SelectValue placeholder="Select a reconciliation run" />
                   </SelectTrigger>
                   <SelectContent>
@@ -354,68 +368,81 @@ export default function Rollback() {
               </div>
 
               {/* Rollback Level Selection */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Rollback Level</label>
+              <div className="space-y-3">
+                <label className="text-sm font-semibold text-slate-700">Rollback Level</label>
                 <div className="grid grid-cols-2 gap-3">
-                  <Button
-                    variant={rollbackLevel === "ingestion" ? "default" : "outline"}
-                    className="h-24 flex flex-col items-center justify-center"
+                  <button
                     onClick={() => setRollbackLevel("ingestion")}
+                    className={`h-24 flex flex-col items-center justify-center rounded-lg border-2 transition-all duration-200 ${
+                      rollbackLevel === "ingestion"
+                        ? "border-blue-500 bg-blue-50 shadow-md"
+                        : "border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50"
+                    }`}
                   >
-                    <div className="text-2xl mb-1">📁</div>
-                    <div className="text-xs font-semibold">Ingestion</div>
-                    <div className="text-xs text-muted-foreground">File validation</div>
-                  </Button>
+                    <FolderOpen className="h-8 w-8 mb-1 text-blue-600" />
+                    <div className="text-xs font-semibold text-slate-800">Ingestion</div>
+                    <div className="text-xs text-slate-500">File validation</div>
+                  </button>
                   
-                  <Button
-                    variant={rollbackLevel === "mid_recon" ? "default" : "outline"}
-                    className="h-24 flex flex-col items-center justify-center"
+                  <button
                     onClick={() => setRollbackLevel("mid_recon")}
+                    className={`h-24 flex flex-col items-center justify-center rounded-lg border-2 transition-all duration-200 ${
+                      rollbackLevel === "mid_recon"
+                        ? "border-blue-500 bg-blue-50 shadow-md"
+                        : "border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50"
+                    }`}
                   >
-                    <div className="text-2xl mb-1">⚡</div>
-                    <div className="text-xs font-semibold">Mid-Recon</div>
-                    <div className="text-xs text-muted-foreground">Critical error</div>
-                  </Button>
+                    <Zap className="h-8 w-8 mb-1 text-orange-600" />
+                    <div className="text-xs font-semibold text-slate-800">Mid-Recon</div>
+                    <div className="text-xs text-slate-500">Critical error</div>
+                  </button>
                   
-                  <Button
-                    variant={rollbackLevel === "cycle_wise" ? "default" : "outline"}
-                    className="h-24 flex flex-col items-center justify-center"
+                  <button
                     onClick={() => setRollbackLevel("cycle_wise")}
+                    className={`h-24 flex flex-col items-center justify-center rounded-lg border-2 transition-all duration-200 ${
+                      rollbackLevel === "cycle_wise"
+                        ? "border-blue-500 bg-blue-50 shadow-md"
+                        : "border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50"
+                    }`}
                   >
-                    <div className="text-2xl mb-1">🔄</div>
-                    <div className="text-xs font-semibold">Cycle-Wise</div>
-                    <div className="text-xs text-muted-foreground">NPCI cycle</div>
-                  </Button>
+                    <Repeat className="h-8 w-8 mb-1 text-purple-600" />
+                    <div className="text-xs font-semibold text-slate-800">Cycle-Wise</div>
+                    <div className="text-xs text-slate-500">NPCI cycle</div>
+                  </button>
                   
-                  <Button
-                    variant={rollbackLevel === "accounting" ? "default" : "outline"}
-                    className="h-24 flex flex-col items-center justify-center"
+                  <button
                     onClick={() => setRollbackLevel("accounting")}
+                    className={`h-24 flex flex-col items-center justify-center rounded-lg border-2 transition-all duration-200 ${
+                      rollbackLevel === "accounting"
+                        ? "border-blue-500 bg-blue-50 shadow-md"
+                        : "border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50"
+                    }`}
                   >
-                    <div className="text-2xl mb-1">📊</div>
-                    <div className="text-xs font-semibold">Accounting</div>
-                    <div className="text-xs text-muted-foreground">Voucher reset</div>
-                  </Button>
+                    <BarChart3 className="h-8 w-8 mb-1 text-green-600" />
+                    <div className="text-xs font-semibold text-slate-800">Accounting</div>
+                    <div className="text-xs text-slate-500">Voucher reset</div>
+                  </button>
                 </div>
               </div>
 
               {/* Level-Specific Inputs */}
               {rollbackLevel === "ingestion" && (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Failed Filename</label>
+                  <label className="text-sm font-semibold text-slate-700">Failed Filename</label>
                   <Input 
                     placeholder="e.g., cbs_inward_20241204.csv"
                     value={failedFilename}
                     onChange={(e) => setFailedFilename(e.target.value)}
+                    className="border-slate-300"
                   />
                 </div>
               )}
 
               {rollbackLevel === "cycle_wise" && (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">NPCI Cycle ID</label>
+                  <label className="text-sm font-semibold text-slate-700">NPCI Cycle ID</label>
                   <Select value={cycleId} onValueChange={setCycleId}>
-                    <SelectTrigger>
+                    <SelectTrigger className="border-slate-300">
                       <SelectValue placeholder="Select NPCI cycle" />
                     </SelectTrigger>
                     <SelectContent>
@@ -431,11 +458,12 @@ export default function Rollback() {
 
               {(rollbackLevel === "mid_recon" || rollbackLevel === "accounting") && (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Reason for Rollback</label>
+                  <label className="text-sm font-semibold text-slate-700">Reason for Rollback</label>
                   <Input 
                     placeholder="Provide reason for this rollback"
                     value={rollbackReason}
                     onChange={(e) => setRollbackReason(e.target.value)}
+                    className="border-slate-300"
                   />
                 </div>
               )}
@@ -466,7 +494,7 @@ export default function Rollback() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Card>
               <CardContent className="pt-6 space-y-2">
-                <h3 className="font-semibold flex items-center gap-2"><span>📁</span> Ingestion Rollback</h3>
+                <h3 className="font-semibold flex items-center gap-2"><FolderOpen className="h-5 w-5 text-blue-600" /> Ingestion Rollback</h3>
                 <p className="text-sm text-muted-foreground">
                   Removes a file that failed validation during upload. Other uploaded files are preserved.
                 </p>
@@ -475,7 +503,7 @@ export default function Rollback() {
             
             <Card>
               <CardContent className="pt-6 space-y-2">
-                <h3 className="font-semibold flex items-center gap-2"><span>⚡</span> Mid-Recon Rollback</h3>
+                <h3 className="font-semibold flex items-center gap-2"><Zap className="h-5 w-5 text-orange-600" /> Mid-Recon Rollback</h3>
                 <p className="text-sm text-muted-foreground">
                   Restores uncommitted transactions after critical errors (DB crash, connection loss) back to unmatched state.
                 </p>
@@ -484,7 +512,7 @@ export default function Rollback() {
             
             <Card>
               <CardContent className="pt-6 space-y-2">
-                <h3 className="font-semibold flex items-center gap-2"><span>🔄</span> Cycle-Wise Rollback</h3>
+                <h3 className="font-semibold flex items-center gap-2"><Repeat className="h-5 w-5 text-purple-600" /> Cycle-Wise Rollback</h3>
                 <p className="text-sm text-muted-foreground">
                   Rolls back a specific NPCI cycle (1A-1C, 2A-2C, 3A-3C, 4) for reprocessing without affecting others.
                 </p>
@@ -493,7 +521,7 @@ export default function Rollback() {
             
             <Card>
               <CardContent className="pt-6 space-y-2">
-                <h3 className="font-semibold flex items-center gap-2"><span>📊</span> Accounting Rollback</h3>
+                <h3 className="font-semibold flex items-center gap-2"><BarChart3 className="h-5 w-5 text-green-600" /> Accounting Rollback</h3>
                 <p className="text-sm text-muted-foreground">
                   Resets vouchers from settled state back to matched/pending when CBS upload fails.
                 </p>

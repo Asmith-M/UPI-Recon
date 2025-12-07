@@ -7,7 +7,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar
 } from "recharts";
-import { RefreshCw, AlertCircle, CheckCircle } from "lucide-react";
+import { RefreshCw, AlertCircle, CheckCircle2, TrendingUp, PieChart as PieChartIcon, BarChart3, Activity } from "lucide-react";
 import { Button } from "../components/ui/button";
 import {
   Carousel,
@@ -21,7 +21,13 @@ import { apiClient } from "../lib/api";
 
 // Historical data will be fetched from API
 
-const CHART_COLORS = ["hsl(142, 76%, 36%)", "hsl(0, 84%, 60%)", "hsl(45, 93%, 47%)"];
+// Use theme colors for charts
+const CHART_COLORS = {
+  matched: "hsl(142, 76%, 36%)",
+  unmatched: "hsl(0, 84%, 60%)",
+  brandBlue: "hsl(var(--brand-blue))",
+  brandSky: "hsl(var(--brand-sky))",
+};
 
 export default function Dashboard() {
   const [dateFrom, setDateFrom] = useState("");
@@ -51,8 +57,8 @@ export default function Dashboard() {
 
   // Prepare pie chart data from summary
   const pieData = summaryData ? [
-    { name: "Matched", value: summaryData.matched, color: "hsl(142, 76%, 36%)" },
-    { name: "Unmatched", value: summaryData.unmatched, color: "hsl(0, 84%, 60%)" },
+    { name: "Matched", value: summaryData.matched, color: CHART_COLORS.matched },
+    { name: "Unmatched", value: summaryData.unmatched, color: CHART_COLORS.unmatched },
   ] : [];
 
   // Prepare summary display data
@@ -114,7 +120,7 @@ export default function Dashboard() {
             </div>
             <Button 
               className="mt-4 bg-brand-blue hover:bg-brand-mid"
-              onClick={() => window.location.href = '/upload'}
+              onClick={() => window.location.href = '/file-upload'}
             >
               Go to File Upload
             </Button>
@@ -176,7 +182,17 @@ export default function Dashboard() {
                   <div>
                     <h3 className="font-semibold text-lg">Current Reconciliation Status</h3>
                     <p className="text-sm text-muted-foreground">Run ID: {summaryData.run_id}</p>
-                    <p className="text-sm text-muted-foreground">Status: {summaryData.status === 'completed' ? '✓ Completed' : summaryData.status}</p>
+                    <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                      <span>Status:</span>
+                      {summaryData.status === 'completed' ? (
+                        <span className="flex items-center gap-1 text-green-600">
+                          <CheckCircle2 className="h-4 w-4" />
+                          Completed
+                        </span>
+                      ) : (
+                        <span>{summaryData.status}</span>
+                      )}
+                    </div>
                   </div>
                   <div className="text-right">
                     <div className="text-3xl font-bold text-green-600">{summaryData.matched}</div>
@@ -245,16 +261,28 @@ export default function Dashboard() {
                           <h3 className="text-center font-semibold mb-2 text-foreground text-sm">Monthly Comparison</h3>
                           <ResponsiveContainer width="100%" height={280}>
                             <BarChart data={historicalData && historicalData.length > 0 ? historicalData : []}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-                              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                              <YAxis tick={{ fontSize: 12 }} />
+                              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+                              <XAxis 
+                                dataKey="month" 
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
+                              <YAxis 
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
                               <Tooltip 
                                 formatter={(value) => value.toLocaleString()}
-                                contentStyle={{ backgroundColor: "var(--color-background)", border: "1px solid var(--color-border)", borderRadius: "4px" }}
+                                contentStyle={{ 
+                                  backgroundColor: "hsl(var(--background))", 
+                                  border: "1px solid hsl(var(--border))", 
+                                  borderRadius: "8px",
+                                  boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)"
+                                }}
                               />
-                              <Legend wrapperStyle={{ fontSize: "12px" }} />
-                              <Bar dataKey="allTxns" fill="hsl(201, 78%, 70%)" name="All Txns" radius={[4, 4, 0, 0]} />
-                              <Bar dataKey="reconciled" fill="hsl(142, 76%, 36%)" name="Reconciled" radius={[4, 4, 0, 0]} />
+                              <Legend wrapperStyle={{ fontSize: "12px", paddingTop: "10px" }} />
+                              <Bar dataKey="allTxns" fill={CHART_COLORS.brandSky} name="All Txns" radius={[6, 6, 0, 0]} />
+                              <Bar dataKey="reconciled" fill={CHART_COLORS.matched} name="Reconciled" radius={[6, 6, 0, 0]} />
                             </BarChart>
                           </ResponsiveContainer>
                         </div>
@@ -266,31 +294,43 @@ export default function Dashboard() {
                           <h3 className="text-center font-semibold mb-2 text-foreground text-sm">Reconciliation Trend</h3>
                           <ResponsiveContainer width="100%" height={280}>
                             <LineChart data={historicalData && historicalData.length > 0 ? historicalData : []}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-                              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                              <YAxis tick={{ fontSize: 12 }} />
+                              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+                              <XAxis 
+                                dataKey="month" 
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
+                              <YAxis 
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
                               <Tooltip 
                                 formatter={(value) => value.toLocaleString()}
-                                contentStyle={{ backgroundColor: "var(--color-background)", border: "1px solid var(--color-border)", borderRadius: "4px" }}
+                                contentStyle={{ 
+                                  backgroundColor: "hsl(var(--background))", 
+                                  border: "1px solid hsl(var(--border))", 
+                                  borderRadius: "8px",
+                                  boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)"
+                                }}
                               />
-                              <Legend wrapperStyle={{ fontSize: "12px" }} />
+                              <Legend wrapperStyle={{ fontSize: "12px", paddingTop: "10px" }} />
                               <Line
                                 type="monotone"
                                 dataKey="allTxns"
-                                stroke="hsl(201, 78%, 70%)"
-                                strokeWidth={2}
+                                stroke={CHART_COLORS.brandSky}
+                                strokeWidth={3}
                                 name="All Txns"
-                                dot={{ fill: "hsl(201, 78%, 70%)", r: 3 }}
-                                activeDot={{ r: 5 }}
+                                dot={{ fill: CHART_COLORS.brandSky, r: 4 }}
+                                activeDot={{ r: 6 }}
                               />
                               <Line
                                 type="monotone"
                                 dataKey="reconciled"
-                                stroke="hsl(142, 76%, 36%)"
-                                strokeWidth={2}
+                                stroke={CHART_COLORS.matched}
+                                strokeWidth={3}
                                 name="Reconciled"
-                                dot={{ fill: "hsl(142, 76%, 36%)", r: 3 }}
-                                activeDot={{ r: 5 }}
+                                dot={{ fill: CHART_COLORS.matched, r: 4 }}
+                                activeDot={{ r: 6 }}
                               />
                             </LineChart>
                           </ResponsiveContainer>
@@ -306,25 +346,38 @@ export default function Dashboard() {
                               ...d,
                               successRate: d.allTxns > 0 ? Math.round((d.reconciled / d.allTxns) * 100) : 0
                             })) : []}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-                              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                              <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
+                              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+                              <XAxis 
+                                dataKey="month" 
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
+                              <YAxis 
+                                domain={[0, 100]} 
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
                               <Tooltip 
                                 formatter={(value) => `${value}%`}
-                                contentStyle={{ backgroundColor: "var(--color-background)", border: "1px solid var(--color-border)", borderRadius: "4px" }}
+                                contentStyle={{ 
+                                  backgroundColor: "hsl(var(--background))", 
+                                  border: "1px solid hsl(var(--border))", 
+                                  borderRadius: "8px",
+                                  boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)"
+                                }}
                               />
-                              <Bar dataKey="successRate" fill="hsl(142, 76%, 36%)" name="Success Rate %" radius={[4, 4, 0, 0]} />
+                              <Bar dataKey="successRate" fill={CHART_COLORS.matched} name="Success Rate %" radius={[6, 6, 0, 0]} />
                             </BarChart>
                           </ResponsiveContainer>
                         </div>
                       </CarouselItem>
                     </CarouselContent>
-                    <div className="flex items-center justify-center gap-x-0 mt-6">
-                      <CarouselPrevious className="relative position-static hover:bg-brand-blue hover:text-white transition-colors -mr-2" />
-                      <div className="text-center text-xs text-muted-foreground flex-1">
-                        Swipe to view charts
+                    <div className="flex items-center justify-center gap-4 mt-4">
+                      <CarouselPrevious className="static translate-y-0 hover:bg-brand-blue hover:text-white transition-colors" />
+                      <div className="text-center text-xs text-muted-foreground px-4">
+                        Swipe or use arrows to view different charts
                       </div>
-                      <CarouselNext className="relative position-static hover:bg-brand-blue hover:text-white transition-colors -ml-2" />
+                      <CarouselNext className="static translate-y-0 hover:bg-brand-blue hover:text-white transition-colors" />
                     </div>
                   </Carousel>
                 </div>
@@ -412,10 +465,15 @@ export default function Dashboard() {
                 <CardTitle className="text-sm font-medium text-muted-foreground">Total Txns</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-foreground">
-                  {summaryData?.total_transactions?.toLocaleString() || '0'}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-3xl font-bold text-brand-blue">
+                      {summaryData?.total_transactions?.toLocaleString() || '0'}
+                    </div>
+                    <div className="text-sm text-muted-foreground mt-1">Latest Run</div>
+                  </div>
+                  <BarChart3 className="h-10 w-10 text-brand-blue opacity-20" />
                 </div>
-                <div className="text-sm text-muted-foreground">Latest Run</div>
               </CardContent>
             </Card>
 
@@ -424,10 +482,15 @@ export default function Dashboard() {
                 <CardTitle className="text-sm font-medium text-muted-foreground">Matched</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-green-600">
-                  {summaryData?.matched?.toLocaleString() || '0'}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-3xl font-bold text-green-600">
+                      {summaryData?.matched?.toLocaleString() || '0'}
+                    </div>
+                    <div className="text-sm text-muted-foreground mt-1">Successfully Reconciled</div>
+                  </div>
+                  <CheckCircle2 className="h-10 w-10 text-green-600 opacity-20" />
                 </div>
-                <div className="text-sm text-muted-foreground">Successfully Reconciled</div>
               </CardContent>
             </Card>
 
@@ -436,10 +499,15 @@ export default function Dashboard() {
                 <CardTitle className="text-sm font-medium text-muted-foreground">Unmatched</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-red-600">
-                  {summaryData?.unmatched?.toLocaleString() || '0'}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-3xl font-bold text-red-600">
+                      {summaryData?.unmatched?.toLocaleString() || '0'}
+                    </div>
+                    <div className="text-sm text-muted-foreground mt-1">Require Attention</div>
+                  </div>
+                  <AlertCircle className="h-10 w-10 text-red-600 opacity-20" />
                 </div>
-                <div className="text-sm text-muted-foreground">Require Attention</div>
               </CardContent>
             </Card>
           </div>
@@ -477,10 +545,15 @@ export default function Dashboard() {
                     <CardTitle className="text-sm font-medium text-muted-foreground">Total Breaks</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-2xl font-bold text-yellow-600">
-                      {summaryData.unmatched}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">Requiring action</p>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-2xl font-bold text-yellow-600">
+                          {summaryData.unmatched}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">Requiring action</p>
+                      </div>
+                      <AlertCircle className="h-8 w-8 text-yellow-600 opacity-20" />
+                    </div>
                   </CardContent>
                 </Card>
                 
@@ -489,10 +562,15 @@ export default function Dashboard() {
                     <CardTitle className="text-sm font-medium text-muted-foreground">Partial Matches</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-2xl font-bold text-orange-600">
-                      {Math.floor(summaryData.unmatched * 0.6)}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">Can be force matched</p>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-2xl font-bold text-orange-600">
+                          {Math.floor(summaryData.unmatched * 0.6)}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">Can be force matched</p>
+                      </div>
+                      <Activity className="h-8 w-8 text-orange-600 opacity-20" />
+                    </div>
                   </CardContent>
                 </Card>
                 
@@ -501,10 +579,15 @@ export default function Dashboard() {
                     <CardTitle className="text-sm font-medium text-muted-foreground">Orphan Records</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-2xl font-bold text-red-600">
-                      {Math.floor(summaryData.unmatched * 0.4)}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">One-sided transactions</p>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-2xl font-bold text-red-600">
+                          {Math.floor(summaryData.unmatched * 0.4)}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">One-sided transactions</p>
+                      </div>
+                      <AlertCircle className="h-8 w-8 text-red-600 opacity-20" />
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -513,10 +596,15 @@ export default function Dashboard() {
                     <CardTitle className="text-sm font-medium text-muted-foreground">Success Rate</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-2xl font-bold text-blue-600">
-                      {summaryData.total_transactions > 0 ? Math.round((summaryData.matched / summaryData.total_transactions) * 100) : 0}%
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">Reconciliation rate</p>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-2xl font-bold text-blue-600">
+                          {summaryData.total_transactions > 0 ? Math.round((summaryData.matched / summaryData.total_transactions) * 100) : 0}%
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">Reconciliation rate</p>
+                      </div>
+                      <TrendingUp className="h-8 w-8 text-blue-600 opacity-20" />
+                    </div>
                   </CardContent>
                 </Card>
               </div>
@@ -546,8 +634,16 @@ export default function Dashboard() {
                         <Cell fill="hsl(39, 100%, 50%)" />
                         <Cell fill="hsl(0, 84%, 60%)" />
                       </Pie>
-                      <Tooltip />
-                      <Legend />
+                      <Tooltip 
+                        formatter={(value) => value.toLocaleString()}
+                        contentStyle={{ 
+                          backgroundColor: "hsl(var(--background))", 
+                          border: "1px solid hsl(var(--border))", 
+                          borderRadius: "8px",
+                          boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)"
+                        }}
+                      />
+                      <Legend verticalAlign="bottom" height={36} />
                     </PieChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -579,7 +675,7 @@ export default function Dashboard() {
             <Card className="shadow-lg">
               <CardContent className="pt-6">
                 <div className="text-center py-8">
-                  <CheckCircle className="w-16 h-16 mx-auto text-green-500 mb-4" />
+                  <CheckCircle2 className="w-16 h-16 mx-auto text-green-500 mb-4" />
                   <p className="text-lg font-semibold text-green-600">Perfect Reconciliation!</p>
                   <p className="text-muted-foreground mt-2">
                     All transactions have been successfully reconciled with zero breaks.

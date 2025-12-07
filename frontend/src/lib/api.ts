@@ -212,9 +212,12 @@ export const apiClient = {
   },
 
   // Force Match
-  forceMatch: async (rrn: string, source1: string, source2: string, action: string = 'match'): Promise<ForceMatchResponse> => {
+  forceMatch: async (rrn: string, source1: string, source2: string, action: string = 'match', lhsColumn?: string, rhsColumn?: string): Promise<ForceMatchResponse> => {
+    const params: any = { rrn, source1, source2, action };
+    if (lhsColumn) params.lhs_column = lhsColumn;
+    if (rhsColumn) params.rhs_column = rhsColumn;
     const response: AxiosResponse<ForceMatchResponse> = await api.post('/api/v1/force-match', null, {
-      params: { rrn, source1, source2, action },
+      params,
     });
     return response.data;
   },

@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import json
+from datetime import datetime
 from typing import Dict, Optional, List
 from file_handler import FileHandler
 from recon_engine import ReconciliationEngine
@@ -38,6 +39,7 @@ recon_engine = ReconciliationEngine()
 rollback_manager = RollbackManager(upload_dir=UPLOAD_DIR, output_dir=OUTPUT_DIR)
 exception_handler = ExceptionHandler(upload_dir=UPLOAD_DIR, output_dir=OUTPUT_DIR)
 gl_engine = GLJustificationEngine(output_dir=OUTPUT_DIR)
+settlement_engine = SettlementEngine(output_dir=OUTPUT_DIR)
 audit_trail = AuditTrail(output_dir=OUTPUT_DIR)
 
 # ============================================================================
@@ -1250,7 +1252,7 @@ async def get_latest_raw():
 
 # NEW: Force Match API
 @app.post("/api/v1/force-match")
-async def force_match_rrn(rrn: str, source1: str, source2: str, action: str = "match"):
+async def force_match_rrn(rrn: str, source1: str, source2: str, action: str = "match", lhs_column: str = None, rhs_column: str = None):
     """Force match two RRNs from different systems"""
     try:
         # Get latest reconciliation data
@@ -1267,13 +1269,21 @@ async def force_match_rrn(rrn: str, source1: str, source2: str, action: str = "m
         # Update the RRN status to force matched
         if rrn in data:
             data[rrn]['status'] = 'FORCE_MATCHED'
-            # Update amounts to match
-            if source1 == 'cbs' and source2 in ['switch', 'npci']:
-                data[rrn][source2] = data[rrn]['cbs']
-            elif source2 == 'cbs' and source1 in ['switch', 'npci']:
-                data[rrn][source1] = data[rrn]['cbs']
-            elif source1 == 'switch' and source2 == 'npci':
-                data[rrn]['npci'] = data[rrn]['switch']
+            # If specific columns are provided, copy only those fields
+            if lhs_column and rhs_column:
+                lhs_val = data[rrn].get(source1, {}).get(lhs_column)
+                # ensure nested dicts exist
+                if source2 not in data[rrn] or not isinstance(data[rrn].get(source2), dict):
+                    data[rrn][source2] = {}
+                data[rrn][source2][rhs_column] = lhs_val
+            else:
+                # Fallback: copy entire object from source1 to source2 for common sources
+                if source1 == 'cbs' and source2 in ['switch', 'npci']:
+                    data[rrn][source2] = data[rrn]['cbs']
+                elif source2 == 'cbs' and source1 in ['switch', 'npci']:
+                    data[rrn][source1] = data[rrn]['cbs']
+                elif source1 == 'switch' and source2 == 'npci':
+                    data[rrn]['npci'] = data[rrn]['switch']
         
         # Save updated data
         with open(json_path, 'w') as f:

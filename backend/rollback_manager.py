@@ -1,6 +1,6 @@
 """
 Rollback Manager - Handles granular rollback operations at multiple levels
-Supports: Ingestion, Mid-Recon, Cycle-Wise, and Accounting Rollback
+Supports: Full, Ingestion, Mid-Recon, Cycle-Wise, and Accounting Rollback
 """
 
 import os
@@ -16,6 +16,7 @@ logger = get_logger(__name__)
 
 class RollbackLevel(Enum):
     """Rollback operation levels"""
+    FULL = "full"                    # Complete process rollback (upload to recon)
     INGESTION = "ingestion"          # File validation failure
     MID_RECON = "mid_recon"          # During reconciliation
     CYCLE_WISE = "cycle_wise"        # Specific NPCI cycle
@@ -80,7 +81,150 @@ class RollbackManager:
         
         with open(self.rollback_history_file, 'w') as f:
             json.dump(history, f, indent=2)
-    
+
+    # ========================================================================
+    # STAGE 0: FULL ROLLBACK
+    # ========================================================================
+
+    def full_rollback(self, run_id: str, reason: str,
+                     confirmation_required: bool = True) -> Dict:
+        """
+        Complete rollback of the entire process from upload to reconciliation
+        Removes all output files and resets to pre-upload state
+        WARNING: This is a destructive operation that cannot be undone
+
+        Args:
+            run_id: Current run identifier
+            reason: Reason for full rollback (e.g., 'Process restart required')
+            confirmation_required: Whether user confirmation is needed (default: True)
+
+        Returns:
+            Dict with rollback details
+        """
+        # Validate rollback operation
+        can_rollback, validation_msg = self._validate_rollback_allowed(run_id, RollbackLevel.FULL)
+        if not can_rollback:
+            raise ValueError(f"Full rollback not allowed: {validation_msg}")
+
+        # Validate reason
+        if not reason or not reason.strip():
+            raise ValueError("Rollback reason cannot be empty")
+
+        if confirmation_required:
+            return {
+                "status": "confirmation_required",
+                "message": f"⚠️ FULL ROLLBACK WARNING: This will permanently delete all processed data for run {run_id}. This action cannot be undone. Reason: {reason}",
+                "run_id": run_id,
+                "reason": reason,
+                "confirmation_details": {
+                    "rollback_level": "full",
+                    "reason": reason,
+                    "action": "complete_data_deletion",
+                    "warning": "This will delete all output files and reset the process"
+                }
+            }
+
+        rollback_id = self._log_rollback(
+            RollbackLevel.FULL,
+            run_id,
+            {
+                "reason": reason,
+                "action": "complete_process_reset",
+                "confirmation_provided": not confirmation_required
+            }
+        )
+
+        try:
+            self._update_rollback_status(rollback_id, RollbackStatus.IN_PROGRESS)
+
+            output_dir = os.path.join(self.output_dir, run_id)
+            upload_dir = os.path.join(self.upload_dir, run_id)
+
+            # Create comprehensive backup before deletion
+            backup_dir = os.path.join(self.output_dir, f"full_backup_{run_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            try:
+                if os.path.exists(output_dir):
+                    shutil.copytree(output_dir, backup_dir)
+                    logger.info(f"Full backup created: {backup_dir}")
+                else:
+                    logger.warning(f"No output directory to backup: {output_dir}")
+            except Exception as backup_error:
+                logger.error(f"Failed to create full backup: {str(backup_error)}")
+                raise ValueError(f"Cannot proceed without backup: {str(backup_error)}")
+
+            # Track what was deleted
+            deleted_files = []
+            deleted_dirs = []
+
+            # Delete output directory (recon, accounting, etc.)
+            if os.path.exists(output_dir):
+                try:
+                    # List files before deletion for logging
+                    for root, dirs, files in os.walk(output_dir):
+                        for file in files:
+                            deleted_files.append(os.path.join(root, file))
+                        for dir_name in dirs:
+                            deleted_dirs.append(os.path.join(root, dir_name))
+
+                    shutil.rmtree(output_dir)
+                    logger.info(f"Deleted output directory: {output_dir}")
+                except Exception as delete_error:
+                    logger.error(f"Failed to delete output directory: {str(delete_error)}")
+                    raise ValueError(f"Failed to delete output directory: {str(delete_error)}")
+
+            # Reset upload metadata (but keep uploaded files)
+            metadata_path = os.path.join(upload_dir, "metadata.json")
+            if os.path.exists(metadata_path):
+                try:
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+
+                    # Clear processing status and results
+                    metadata["processing_status"] = "reset"
+                    metadata["recon_completed"] = False
+                    metadata["accounting_completed"] = False
+                    metadata["last_processed"] = None
+                    metadata["results_summary"] = {}
+
+                    # Add full rollback record
+                    if "rollback_history" not in metadata:
+                        metadata["rollback_history"] = []
+                    metadata["rollback_history"].append({
+                        "rollback_id": rollback_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "reason": reason,
+                        "action": "full_process_reset",
+                        "deleted_output_dir": output_dir,
+                        "backup_location": backup_dir
+                    })
+
+                    with open(metadata_path, 'w') as f:
+                        json.dump(metadata, f, indent=2)
+
+                    logger.info(f"Reset metadata for run {run_id}")
+                except Exception as meta_error:
+                    logger.warning(f"Failed to reset metadata: {str(meta_error)}")
+
+            self._update_rollback_status(rollback_id, RollbackStatus.COMPLETED)
+
+            return {
+                "status": "success",
+                "rollback_id": rollback_id,
+                "message": f"Full rollback completed for run {run_id}. All processed data has been deleted and the process has been reset.",
+                "reason": reason,
+                "run_id": run_id,
+                "backup_created": backup_dir,
+                "deleted_files_count": len(deleted_files),
+                "deleted_dirs_count": len(deleted_dirs),
+                "confirmation_provided": not confirmation_required,
+                "warning": "Process has been completely reset. You can restart from file upload."
+            }
+
+        except Exception as e:
+            logger.error(f"Full rollback failed: {str(e)}")
+            self._update_rollback_status(rollback_id, RollbackStatus.FAILED)
+            raise
+
     # ========================================================================
     # STAGE 1: INGESTION ROLLBACK
     # ========================================================================
@@ -233,52 +377,97 @@ class RollbackManager:
                 raise ValueError(f"Cannot proceed without backup: {str(backup_error)}")
 
             # Atomic transaction state restoration
-            original_matched = recon_data.get("matched", [])
-            original_unmatched = recon_data.get("unmatched", [])
             transactions_restored = []
 
-            if affected_transactions:
-                # Find and validate affected transactions
-                affected_txns_found = []
-                for txn_id in affected_transactions:
-                    matching_txns = [
-                        t for t in original_matched
-                        if t.get("txn_id") == txn_id or t.get("rrn") == txn_id
-                    ]
-                    if matching_txns:
-                        affected_txns_found.extend(matching_txns)
-                    else:
-                        logger.warning(f"Transaction {txn_id} not found in matched transactions")
+            # Support two recon_output formats: (A) mapping rrn->record, (B) legacy dict with 'matched'/'unmatched' lists
+            if isinstance(recon_data, dict) and not recon_data.get("matched") and not recon_data.get("unmatched"):
+                # Format A: dictionary keyed by RRN
+                if affected_transactions:
+                    for txn_id in affected_transactions:
+                        # Direct lookup by rrn
+                        entry = recon_data.get(txn_id)
+                        if not entry:
+                            # Try to find by rrn field inside values
+                            for k, v in recon_data.items():
+                                if isinstance(v, dict) and (v.get('rrn') == txn_id or v.get('txn_id') == txn_id):
+                                    entry = v
+                                    break
 
-                # Remove affected transactions from matched
-                remaining_matched = [
-                    t for t in original_matched
-                    if not any(t.get("txn_id") == txn_id or t.get("rrn") == txn_id for txn_id in affected_transactions)
-                ]
-
-                # Add affected transactions back to unmatched with rollback metadata
-                restored_unmatched = original_unmatched.copy()
-                for txn in affected_txns_found:
-                    txn_copy = txn.copy()
-                    txn_copy["rollback_metadata"] = {
-                        "rollback_id": rollback_id,
-                        "previous_status": "matched",
-                        "rollback_timestamp": datetime.now().isoformat(),
-                        "rollback_reason": error_message
-                    }
-                    restored_unmatched.append(txn_copy)
-                    transactions_restored.append(txn.get("rrn") or txn.get("txn_id"))
-
-                # Update recon data atomically
-                recon_data["matched"] = remaining_matched
-                recon_data["unmatched"] = restored_unmatched
+                        if entry and entry.get('status') == 'MATCHED':
+                            if 'rollback_metadata' not in entry:
+                                entry['rollback_metadata'] = []
+                            entry['rollback_metadata'].append({
+                                'rollback_id': rollback_id,
+                                'previous_status': 'MATCHED',
+                                'rollback_timestamp': datetime.now().isoformat(),
+                                'rollback_reason': error_message
+                            })
+                            # Mark as unmatched/orphan for re-processing
+                            entry['status'] = 'ORPHAN'
+                            transactions_restored.append(txn_id)
+                        else:
+                            logger.warning(f"Transaction {txn_id} not found or not matched in data")
+                else:
+                    # Rollback all matched transactions
+                    for rrn_key, entry in recon_data.items():
+                        if isinstance(entry, dict) and entry.get('status') == 'MATCHED':
+                            if 'rollback_metadata' not in entry:
+                                entry['rollback_metadata'] = []
+                            entry['rollback_metadata'].append({
+                                'rollback_id': rollback_id,
+                                'previous_status': 'MATCHED',
+                                'rollback_timestamp': datetime.now().isoformat(),
+                                'rollback_reason': error_message
+                            })
+                            entry['status'] = 'ORPHAN'
+                            transactions_restored.append(rrn_key)
             else:
-                # Rollback all matched transactions if no specific transactions provided
-                logger.warning("No specific transactions provided - rolling back all matched transactions")
-                all_matched_txns = original_matched.copy()
-                recon_data["matched"] = []
-                recon_data["unmatched"] = original_unmatched + all_matched_txns
-                transactions_restored = [t.get("rrn") or t.get("txn_id") for t in all_matched_txns]
+                # Legacy format: lists under 'matched' and 'unmatched'
+                original_matched = recon_data.get("matched", [])
+                original_unmatched = recon_data.get("unmatched", [])
+
+                if affected_transactions:
+                    # Find and validate affected transactions
+                    affected_txns_found = []
+                    for txn_id in affected_transactions:
+                        matching_txns = [
+                            t for t in original_matched
+                            if t.get("txn_id") == txn_id or t.get("rrn") == txn_id
+                        ]
+                        if matching_txns:
+                            affected_txns_found.extend(matching_txns)
+                        else:
+                            logger.warning(f"Transaction {txn_id} not found in matched transactions")
+
+                    # Remove affected transactions from matched
+                    remaining_matched = [
+                        t for t in original_matched
+                        if not any(t.get("txn_id") == txn_id or t.get("rrn") == txn_id for txn_id in affected_transactions)
+                    ]
+
+                    # Add affected transactions back to unmatched with rollback metadata
+                    restored_unmatched = original_unmatched.copy()
+                    for txn in affected_txns_found:
+                        txn_copy = txn.copy()
+                        txn_copy["rollback_metadata"] = {
+                            "rollback_id": rollback_id,
+                            "previous_status": "matched",
+                            "rollback_timestamp": datetime.now().isoformat(),
+                            "rollback_reason": error_message
+                        }
+                        restored_unmatched.append(txn_copy)
+                        transactions_restored.append(txn.get("rrn") or txn.get("txn_id"))
+
+                    # Update recon data atomically
+                    recon_data["matched"] = remaining_matched
+                    recon_data["unmatched"] = restored_unmatched
+                else:
+                    # Rollback all matched transactions if no specific transactions provided
+                    logger.warning("No specific transactions provided - rolling back all matched transactions")
+                    all_matched_txns = original_matched.copy()
+                    recon_data["matched"] = []
+                    recon_data["unmatched"] = original_unmatched + all_matched_txns
+                    transactions_restored = [t.get("rrn") or t.get("txn_id") for t in all_matched_txns]
 
             # Update status counters with rollback information
             recon_data["summary"] = {
@@ -398,52 +587,102 @@ class RollbackManager:
                 raise ValueError(f"Cannot proceed without backup: {str(backup_error)}")
 
             # Atomic cycle transaction restoration
-            matched_txns = recon_data.get("matched", [])
-            original_unmatched = recon_data.get("unmatched", [])
+            transactions_restored = []
 
-            # Find transactions from specific cycle with validation
-            cycle_txns = []
-            for txn in matched_txns:
-                if txn.get("cycle_id") == cycle_id:
-                    cycle_txns.append(txn)
+            # Support mapping-format (rrn->record) or legacy list-format
+            if isinstance(recon_data, dict) and not recon_data.get('matched') and not recon_data.get('unmatched'):
+                cycle_txns = []
+                for rrn_key, entry in recon_data.items():
+                    if isinstance(entry, dict) and entry.get('cycle_id') == cycle_id and entry.get('status') == 'MATCHED':
+                        cycle_txns.append((rrn_key, entry))
 
-            if not cycle_txns:
-                logger.warning(f"No transactions found for cycle {cycle_id} in matched transactions")
-                # Still proceed but log the situation
+                if not cycle_txns:
+                    logger.warning(f"No transactions found for cycle {cycle_id} in matched transactions")
 
-            # Remove cycle transactions from matched
-            remaining_matched = [t for t in matched_txns if t.get("cycle_id") != cycle_id]
+                for rrn_key, txn in cycle_txns:
+                    if 'rollback_metadata' not in txn:
+                        txn['rollback_metadata'] = []
+                    txn['rollback_metadata'].append({
+                        'rollback_id': rollback_id,
+                        'previous_status': 'MATCHED',
+                        'cycle_id': cycle_id,
+                        'rollback_timestamp': datetime.now().isoformat(),
+                        'rollback_reason': f'Cycle {cycle_id} rollback for re-processing'
+                    })
+                    txn['status'] = 'ORPHAN'
+                    transactions_restored.append(rrn_key)
+            else:
+                matched_txns = recon_data.get("matched", [])
+                original_unmatched = recon_data.get("unmatched", [])
 
-            # Add cycle transactions back to unmatched with rollback metadata
-            restored_unmatched = original_unmatched.copy()
-            for txn in cycle_txns:
-                txn_copy = txn.copy()
-                txn_copy["rollback_metadata"] = {
-                    "rollback_id": rollback_id,
-                    "previous_status": "matched",
-                    "cycle_id": cycle_id,
-                    "rollback_timestamp": datetime.now().isoformat(),
-                    "rollback_reason": f"Cycle {cycle_id} rollback for re-processing"
-                }
-                restored_unmatched.append(txn_copy)
+                # Find transactions from specific cycle with validation
+                cycle_txns = []
+                for txn in matched_txns:
+                    if txn.get("cycle_id") == cycle_id:
+                        cycle_txns.append(txn)
 
-            # Update recon data atomically
-            recon_data["matched"] = remaining_matched
-            recon_data["unmatched"] = restored_unmatched
+                if not cycle_txns:
+                    logger.warning(f"No transactions found for cycle {cycle_id} in matched transactions")
+
+                # Remove cycle transactions from matched
+                remaining_matched = [t for t in matched_txns if t.get("cycle_id") != cycle_id]
+
+                # Add cycle transactions back to unmatched with rollback metadata
+                restored_unmatched = original_unmatched.copy()
+                for txn in cycle_txns:
+                    txn_copy = txn.copy()
+                    txn_copy["rollback_metadata"] = {
+                        "rollback_id": rollback_id,
+                        "previous_status": "matched",
+                        "cycle_id": cycle_id,
+                        "rollback_timestamp": datetime.now().isoformat(),
+                        "rollback_reason": f"Cycle {cycle_id} rollback for re-processing"
+                    }
+                    restored_unmatched.append(txn_copy)
+                    transactions_restored.append(txn_copy.get('rrn') or txn_copy.get('txn_id'))
+
+                # Update recon data atomically
+                recon_data["matched"] = remaining_matched
+                recon_data["unmatched"] = restored_unmatched
 
             # Update status counters with detailed rollback information
-            recon_data["summary"] = {
-                "total_matched": len(remaining_matched),
-                "total_unmatched": len(restored_unmatched),
-                "last_cycle_rollback": {
-                    "rollback_id": rollback_id,
-                    "cycle_id": cycle_id,
-                    "transactions_restored": len(cycle_txns),
-                    "timestamp": datetime.now().isoformat(),
-                    "confirmation_provided": not confirmation_required
-                },
-                "rollback_timestamp": datetime.now().isoformat()
-            }
+            try:
+                # determine counts depending on data format
+                if isinstance(recon_data, dict) and not recon_data.get('matched') and not recon_data.get('unmatched'):
+                    matched_count = len([v for v in recon_data.values() if isinstance(v, dict) and v.get('status') == 'MATCHED'])
+                    unmatched_count = len([v for v in recon_data.values() if isinstance(v, dict) and v.get('status') in ['ORPHAN','PARTIAL_MATCH','PARTIAL_MISMATCH']])
+                    restored_count = len(transactions_restored)
+                else:
+                    matched_count = len(recon_data.get('matched', []))
+                    unmatched_count = len(recon_data.get('unmatched', []))
+                    restored_count = len(transactions_restored)
+
+                recon_data['summary'] = {
+                    'total_matched': matched_count,
+                    'total_unmatched': unmatched_count,
+                    'last_cycle_rollback': {
+                        'rollback_id': rollback_id,
+                        'cycle_id': cycle_id,
+                        'transactions_restored': restored_count,
+                        'timestamp': datetime.now().isoformat(),
+                        'confirmation_provided': not confirmation_required
+                    },
+                    'rollback_timestamp': datetime.now().isoformat()
+                }
+            except Exception:
+                # Fallback summary if something unexpected occurred
+                recon_data['summary'] = {
+                    'total_matched': 0,
+                    'total_unmatched': 0,
+                    'last_cycle_rollback': {
+                        'rollback_id': rollback_id,
+                        'cycle_id': cycle_id,
+                        'transactions_restored': len(transactions_restored),
+                        'timestamp': datetime.now().isoformat(),
+                        'confirmation_provided': not confirmation_required
+                    },
+                    'rollback_timestamp': datetime.now().isoformat()
+                }
 
             # Atomic save operation
             temp_file = recon_output_path + ".tmp"
@@ -688,7 +927,13 @@ class RollbackManager:
             return False, f"Run {run_id} not found"
 
         # Level-specific validations
-        if rollback_level == RollbackLevel.MID_RECON:
+        if rollback_level == RollbackLevel.FULL:
+            # Full rollback requires output directory to exist (something to rollback)
+            output_dir = os.path.join(self.output_dir, run_id)
+            if not os.path.exists(output_dir):
+                return False, "No output directory found - nothing to rollback"
+
+        elif rollback_level == RollbackLevel.MID_RECON:
             output_dir = os.path.join(self.output_dir, run_id)
             recon_file = os.path.join(output_dir, "recon_output.json")
             if not os.path.exists(recon_file):
