@@ -71,7 +71,7 @@ export default function Rollback() {
   const [rollbackHistory, setRollbackHistory] = useState<RollbackHistory[]>([]);
   const [rollbackHistoryLoading, setRollbackHistoryLoading] = useState(false);
 
-  const NPCI_CYCLES = ['1C', '2C', '3C', '4C', '5C', '6C', '7C', '8C', '9C', '10C'];
+  const NPCI_CYCLES = ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C', '4'];
 
   useEffect(() => {
     fetchRunHistory();
@@ -169,7 +169,7 @@ export default function Rollback() {
 
     try {
       setIsRollingBack(true);
-      let response;
+      let result;
 
       switch (rollbackLevel) {
         case "ingestion":
@@ -181,17 +181,11 @@ export default function Rollback() {
             });
             return;
           }
-          response = await fetch(
-            `/api/v1/rollback/ingestion?run_id=${selectedRun}&filename=${failedFilename}&error=User initiated rollback`,
-            { method: "POST" }
-          );
+          result = await apiClient.rollbackIngestion(selectedRun, failedFilename, "User initiated rollback");
           break;
 
         case "mid_recon":
-          response = await fetch(
-            `/api/v1/rollback/mid-recon?run_id=${selectedRun}&error=${encodeURIComponent(rollbackReason || "Critical error during reconciliation")}`,
-            { method: "POST" }
-          );
+          result = await apiClient.rollbackMidRecon(selectedRun, rollbackReason || "Critical error during reconciliation");
           break;
 
         case "cycle_wise":
@@ -203,40 +197,16 @@ export default function Rollback() {
             });
             return;
           }
-          response = await fetch(
-            `/api/v1/rollback/cycle-wise?run_id=${selectedRun}&cycle_id=${cycleId}`,
-            { method: "POST" }
-          );
+          result = await apiClient.rollbackCycleWise(selectedRun, cycleId);
           break;
 
         case "accounting":
-          response = await fetch(
-            `/api/v1/rollback/accounting?run_id=${selectedRun}&reason=${encodeURIComponent(rollbackReason || "User initiated accounting rollback")}`,
-            { method: "POST" }
-          );
+          result = await apiClient.rollbackAccounting(selectedRun, rollbackReason || "User initiated accounting rollback");
           break;
 
         default:
           throw new Error("Invalid rollback level");
       }
-
-      if (!response.ok) {
-        let errorMessage = "Rollback failed";
-        const contentType = response.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          try {
-            const error = await response.json();
-            errorMessage = error.detail || "Rollback failed";
-          } catch (parseError) {
-            errorMessage = "Rollback failed with an unknown error";
-          }
-        } else {
-          errorMessage = `Rollback failed with status ${response.status}`;
-        }
-        throw new Error(errorMessage);
-      }
-
-      const result = await response.json();
 
       toast({
         title: "Success",

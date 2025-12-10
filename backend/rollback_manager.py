@@ -229,17 +229,17 @@ class RollbackManager:
     # STAGE 1: INGESTION ROLLBACK
     # ========================================================================
     
-    def ingestion_rollback(self, run_id: str, failed_filename: str, 
+    def ingestion_rollback(self, run_id: str, failed_filename: str,
                           validation_error: str) -> Dict:
         """
         Rollback specific file that failed validation during upload
         Removes only the failed file, preserves other uploaded files
-        
+
         Args:
             run_id: Current run identifier
-            failed_filename: Name of the file that failed validation
+            failed_filename: Name of the file that failed validation (can be original or standardized name)
             validation_error: Description of the validation error
-        
+
         Returns:
             Dict with rollback details and status
         """
@@ -252,53 +252,123 @@ class RollbackManager:
                 "action": "remove_failed_file"
             }
         )
-        
+
         try:
             self._update_rollback_status(rollback_id, RollbackStatus.IN_PROGRESS)
-            
+
             run_folder = os.path.join(self.upload_dir, run_id)
-            failed_file_path = os.path.join(run_folder, failed_filename)
-            
-            # Remove the failed file
-            if os.path.exists(failed_file_path):
-                os.remove(failed_file_path)
-                logger.info(f"Ingestion rollback: Removed {failed_filename} from {run_id}")
-            
+
+            # Check if run folder exists
+            if not os.path.exists(run_folder):
+                raise ValueError(f"Run folder does not exist: {run_folder}")
+
+            # Try to find the file - check both original and standardized names
+            failed_file_path = None
+            actual_filename = None
+
+            # First, try exact match
+            exact_path = os.path.join(run_folder, failed_filename)
+            if os.path.exists(exact_path):
+                failed_file_path = exact_path
+                actual_filename = failed_filename
+            else:
+                # Check file mapping if available
+                mapping_file = os.path.join(run_folder, "file_mapping.json")
+                if os.path.exists(mapping_file):
+                    try:
+                        with open(mapping_file, 'r') as f:
+                            file_mapping = json.load(f)
+
+                        # Find file by type or partial match
+                        for file_type, mapped_name in file_mapping.items():
+                            if (file_type in failed_filename.lower() or
+                                failed_filename.lower() in file_type or
+                                failed_filename.lower() in mapped_name.lower()):
+                                mapped_path = os.path.join(run_folder, mapped_name)
+                                if os.path.exists(mapped_path):
+                                    failed_file_path = mapped_path
+                                    actual_filename = mapped_name
+                                    break
+                    except Exception as mapping_error:
+                        logger.warning(f"Could not read file mapping: {mapping_error}")
+
+                # If still not found, search directory for similar files
+                if not failed_file_path:
+                    for filename in os.listdir(run_folder):
+                        if (failed_filename.lower() in filename.lower() or
+                            any(keyword in filename.lower() for keyword in ['cbs', 'switch', 'npci', 'ntsl', 'adjustment'] if keyword in failed_filename.lower())):
+                            file_path = os.path.join(run_folder, filename)
+                            if os.path.exists(file_path) and os.path.isfile(file_path):
+                                failed_file_path = file_path
+                                actual_filename = filename
+                                break
+
+            if not failed_file_path:
+                logger.warning(f"File not found for rollback: {failed_filename}")
+                # Don't fail the rollback if file is already gone
+                actual_filename = failed_filename
+            else:
+                # Remove the failed file
+                try:
+                    os.remove(failed_file_path)
+                    logger.info(f"Ingestion rollback: Removed {actual_filename} from {run_id}")
+                except Exception as remove_error:
+                    logger.error(f"Failed to remove file {failed_file_path}: {remove_error}")
+                    raise ValueError(f"Could not remove failed file: {remove_error}")
+
             # Update metadata
             metadata_path = os.path.join(run_folder, "metadata.json")
             if os.path.exists(metadata_path):
-                with open(metadata_path, 'r') as f:
-                    metadata = json.load(f)
-                
-                # Remove from uploaded_files
-                if "uploaded_files" in metadata:
-                    metadata["uploaded_files"] = [
-                        f for f in metadata["uploaded_files"] if f != failed_filename
-                    ]
-                
-                # Add rollback record
-                if "rollback_history" not in metadata:
-                    metadata["rollback_history"] = []
-                metadata["rollback_history"].append({
-                    "rollback_id": rollback_id,
-                    "timestamp": datetime.now().isoformat(),
-                    "removed_file": failed_filename,
-                    "reason": validation_error
-                })
-                
-                with open(metadata_path, 'w') as f:
-                    json.dump(metadata, f, indent=2)
-            
+                try:
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+
+                    # Remove from uploaded_files (try multiple ways to match)
+                    if "uploaded_files" in metadata:
+                        original_list = metadata["uploaded_files"]
+                        filtered_list = []
+
+                        for uploaded_file in original_list:
+                            # Keep file if it doesn't match the failed file in any way
+                            if not (uploaded_file == failed_filename or
+                                   uploaded_file == actual_filename or
+                                   failed_filename.lower() in uploaded_file.lower() or
+                                   (actual_filename and actual_filename.lower() in uploaded_file.lower())):
+                                filtered_list.append(uploaded_file)
+
+                        metadata["uploaded_files"] = filtered_list
+                        logger.info(f"Updated uploaded_files list, removed: {failed_filename}")
+
+                    # Add rollback record
+                    if "rollback_history" not in metadata:
+                        metadata["rollback_history"] = []
+                    metadata["rollback_history"].append({
+                        "rollback_id": rollback_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "removed_file": actual_filename or failed_filename,
+                        "original_request": failed_filename,
+                        "reason": validation_error
+                    })
+
+                    with open(metadata_path, 'w') as f:
+                        json.dump(metadata, f, indent=2)
+
+                    logger.info(f"Updated metadata for run {run_id}")
+                except Exception as meta_error:
+                    logger.warning(f"Failed to update metadata: {meta_error}")
+                    # Don't fail rollback for metadata issues
+
             self._update_rollback_status(rollback_id, RollbackStatus.COMPLETED)
-            
+
             return {
                 "status": "success",
                 "rollback_id": rollback_id,
-                "message": f"Ingestion rollback completed for {failed_filename}",
-                "removed_file": failed_filename,
+                "message": f"Ingestion rollback completed for {actual_filename or failed_filename}",
+                "removed_file": actual_filename or failed_filename,
+                "original_request": failed_filename,
                 "run_id": run_id
             }
-        
+
         except Exception as e:
             logger.error(f"Ingestion rollback failed: {str(e)}")
             self._update_rollback_status(rollback_id, RollbackStatus.FAILED)
