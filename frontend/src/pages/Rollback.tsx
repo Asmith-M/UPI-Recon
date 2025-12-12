@@ -535,9 +535,9 @@ export default function Rollback() {
               <AlertTriangle className="w-5 h-5 text-orange-600" />
               Confirm {rollbackLevel.replace('_', ' ').toUpperCase()} Rollback
             </AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogDescription asChild>
               <div className="space-y-3">
-                <p>
+                <p className="text-sm text-muted-foreground">
                   Are you sure you want to perform a <strong>{rollbackLevel.replace('_', ' ')}</strong> rollback on <strong>{selectedRun}</strong>?
                 </p>
                 {rollbackLevel === "whole_process" && (

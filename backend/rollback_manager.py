@@ -6,8 +6,9 @@ Supports: Full, Ingestion, Mid-Recon, Cycle-Wise, and Accounting Rollback
 import os
 import json
 import shutil
+import portalocker
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 from enum import Enum
 from logging_config import get_logger
 
@@ -16,7 +17,7 @@ logger = get_logger(__name__)
 
 class RollbackLevel(Enum):
     """Rollback operation levels"""
-    WHOLE_PROCESS = "whole_process"  # Complete process rollback (upload to recon)
+    WHOLE_PROCESS = "whole_process"  # Complete process rollback
     INGESTION = "ingestion"          # File ingestion rollback
     MID_RECON = "mid_recon"          # Mid-reconciliation rollback
     CYCLE_WISE = "cycle_wise"        # Specific NPCI cycle
@@ -131,7 +132,11 @@ class RollbackManager:
         if confirmation_required:
             return {
                 "status": "confirmation_required",
-                "message": f"⚠️ FULL ROLLBACK WARNING: This will permanently delete all processed data for run {run_id}. This action cannot be undone. Reason: {reason}",
+                "message": (
+                    f"⚠️ FULL ROLLBACK WARNING: This will permanently "
+                    f"delete all processed data for run {run_id}. This action "
+                    f"cannot be undone. Reason: {reason}"
+                ),
                 "run_id": run_id,
                 "reason": reason,
                 "confirmation_details": {
@@ -141,6 +146,9 @@ class RollbackManager:
                     "warning": "This will delete all output files and reset the process"
                 }
             }
+
+        if not self._acquire_rollback_lock(run_id):
+            raise ValueError(f"Another rollback operation is in progress for run {run_id}")
 
         rollback_id = self._log_rollback(
             RollbackLevel.WHOLE_PROCESS,
@@ -228,7 +236,10 @@ class RollbackManager:
             return {
                 "status": "success",
                 "rollback_id": rollback_id,
-                "message": f"Full rollback completed for run {run_id}. All processed data has been deleted and the process has been reset.",
+                "message": (
+                    f"Full rollback completed for run {run_id}. All processed "
+                    f"data has been deleted and the process has been reset."
+                ),
                 "reason": reason,
                 "run_id": run_id,
                 "backup_created": backup_dir,
@@ -381,7 +392,10 @@ class RollbackManager:
             return {
                 "status": "success",
                 "rollback_id": rollback_id,
-                "message": f"Ingestion rollback completed for {actual_filename or failed_filename}",
+                "message": (
+                    f"Ingestion rollback completed for "
+                    f"{actual_filename or failed_filename}"
+                ),
                 "removed_file": actual_filename or failed_filename,
                 "original_request": failed_filename,
                 "run_id": run_id
@@ -421,7 +435,10 @@ class RollbackManager:
         if confirmation_required:
             return {
                 "status": "confirmation_required",
-                "message": f"Mid-recon rollback requires confirmation. Error: {error_message}",
+                "message": (
+                    f"Mid-recon rollback requires confirmation. Error: "
+                    f"{error_message}"
+                ),
                 "affected_transactions": affected_transactions or [],
                 "run_id": run_id,
                 "confirmation_details": {
@@ -577,7 +594,10 @@ class RollbackManager:
                 with open(temp_file, 'w') as f:
                     json.dump(recon_data, f, indent=2)
                 os.replace(temp_file, recon_output_path)  # Atomic file replacement
-                logger.info(f"Mid-recon rollback completed for {run_id}. {len(transactions_restored)} transactions restored.")
+                logger.info(
+                    f"Mid-recon rollback completed for {run_id}. "
+                    f"{len(transactions_restored)} transactions restored."
+                )
             except Exception as save_error:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
@@ -588,7 +608,11 @@ class RollbackManager:
             return {
                 "status": "success",
                 "rollback_id": rollback_id,
-                "message": f"Mid-recon rollback completed. {len(transactions_restored)} transactions restored to unmatched state.",
+                "message": (
+                    f"Mid-recon rollback completed. "
+                    f"{len(transactions_restored)} transactions restored to "
+                    f"unmatched state."
+                ),
                 "affected_transactions": affected_transactions or [],
                 "transactions_restored": transactions_restored,
                 "run_id": run_id,
@@ -633,7 +657,10 @@ class RollbackManager:
         if confirmation_required:
             return {
                 "status": "confirmation_required",
-                "message": f"Cycle-wise rollback requires confirmation for cycle {cycle_id}",
+                "message": (
+                    f"Cycle-wise rollback requires confirmation for cycle "
+                    f"{cycle_id}"
+                ),
                 "cycle_id": cycle_id,
                 "run_id": run_id,
                 "confirmation_details": {
@@ -762,14 +789,14 @@ class RollbackManager:
                 recon_data['summary'] = {
                     'total_matched': 0,
                     'total_unmatched': 0,
-                    'last_cycle_rollback': {
-                        'rollback_id': rollback_id,
-                        'cycle_id': cycle_id,
-                        'transactions_restored': len(transactions_restored),
-                        'timestamp': datetime.now().isoformat(),
-                        'confirmation_provided': not confirmation_required
-                    },
-                    'rollback_timestamp': datetime.now().isoformat()
+                'last_cycle_rollback': {
+                    'rollback_id': rollback_id,
+                    'cycle_id': cycle_id,
+                    'transactions_restored': len(transactions_restored),
+                    'timestamp': datetime.now().isoformat(),
+                    'confirmation_provided': not confirmation_required
+                },
+                'rollback_timestamp': datetime.now().isoformat()
                 }
 
             # Atomic save operation
@@ -778,7 +805,10 @@ class RollbackManager:
                 with open(temp_file, 'w') as f:
                     json.dump(recon_data, f, indent=2)
                 os.replace(temp_file, recon_output_path)  # Atomic file replacement
-                logger.info(f"Cycle-wise rollback for {cycle_id} completed. {len(cycle_txns)} transactions restored.")
+                logger.info(
+                    f"Cycle-wise rollback for {cycle_id} completed. "
+                    f"{len(cycle_txns)} transactions restored."
+                )
             except Exception as save_error:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
@@ -789,7 +819,10 @@ class RollbackManager:
             return {
                 "status": "success",
                 "rollback_id": rollback_id,
-                "message": f"Cycle {cycle_id} rolled back for re-processing. {len(cycle_txns)} transactions restored.",
+                "message": (
+                    f"Cycle {cycle_id} rolled back for re-processing. "
+                    f"{len(cycle_txns)} transactions restored."
+                ),
                 "cycle_id": cycle_id,
                 "transactions_restored": len(cycle_txns),
                 "run_id": run_id,
@@ -836,7 +869,10 @@ class RollbackManager:
             voucher_count = len(voucher_ids) if voucher_ids else "all"
             return {
                 "status": "confirmation_required",
-                "message": f"Accounting rollback requires confirmation. {voucher_count} vouchers will be reset.",
+                "message": (
+                    f"Accounting rollback requires confirmation. "
+                    f"{voucher_count} vouchers will be reset."
+                ),
                 "reason": reason,
                 "voucher_ids": voucher_ids,
                 "run_id": run_id,
@@ -945,7 +981,10 @@ class RollbackManager:
                 with open(temp_file, 'w') as f:
                     json.dump(accounting_data, f, indent=2)
                 os.replace(temp_file, accounting_path)  # Atomic file replacement
-                logger.info(f"Accounting rollback completed for {run_id}. {len(vouchers_reset)} vouchers reset. Reason: {reason}")
+                logger.info(
+                    f"Accounting rollback completed for {run_id}. "
+                    f"{len(vouchers_reset)} vouchers reset. Reason: {reason}"
+                )
             except Exception as save_error:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
@@ -956,7 +995,11 @@ class RollbackManager:
             return {
                 "status": "success",
                 "rollback_id": rollback_id,
-                "message": f"Accounting rollback completed. {len(vouchers_reset)} vouchers reset to matched/pending state.",
+                "message": (
+                    f"Accounting rollback completed. "
+                    f"{len(vouchers_reset)} vouchers reset to matched/pending "
+                    f"state."
+                ),
                 "reason": reason,
                 "vouchers_reset": vouchers_reset,
                 "vouchers_not_found": vouchers_not_found,
@@ -1002,6 +1045,49 @@ class RollbackManager:
             return False, f"Missing required files: {', '.join(missing_files)}"
 
         return True, "All required files present"
+
+    def _detect_recon_format(self, recon_data: Dict) -> str:
+        """Reliably detect reconciliation data format"""
+        if isinstance(recon_data, dict):
+            # Check for legacy format markers
+            if "matched" in recon_data and "unmatched" in recon_data:
+                if isinstance(recon_data["matched"], list):
+                    return "legacy"
+
+            # Check for new format (RRN keys with record values)
+            for key, value in recon_data.items():
+                if isinstance(value, dict) and "status" in value:
+                    return "rrn_keyed"
+
+        return "unknown"
+
+    def _execute_with_rollback(self, operations: List[Callable], cleanup: Callable):
+        """Execute operations with automatic cleanup on failure"""
+        completed_ops = []
+        try:
+            for op in operations:
+                result = op()
+                completed_ops.append(result)
+            return True
+        except Exception as e:
+            logger.error(f"Operation failed, rolling back: {e}")
+            cleanup(completed_ops)
+            raise
+
+    def _acquire_rollback_lock(self, run_id: str) -> bool:
+        """Acquire exclusive lock for rollback operation"""
+        lock_file = os.path.join(self.output_dir, f"{run_id}.rollback.lock")
+        try:
+            self.lock_fd = open(lock_file, 'w')
+            portalocker.lock(self.lock_fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            return True
+        except portalocker.LockException:
+            return False
+
+    def _release_rollback_lock(self):
+        """Release rollback lock"""
+        if hasattr(self, 'lock_fd'):
+            self.lock_fd.close()
 
     def _validate_rollback_allowed(self, run_id: str, rollback_level: RollbackLevel) -> Tuple[bool, str]:
         """Validate if rollback operation is allowed based on current state"""
