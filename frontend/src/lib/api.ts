@@ -270,6 +270,13 @@ export const apiClient = {
   },
 
   // Rollback Operations (Phase 3)
+  rollbackWholeProcess: async (runId: string, reason: string = "User initiated whole process rollback"): Promise<any> => {
+    const response: AxiosResponse = await api.post(
+      `/api/v1/rollback/whole-process?run_id=${runId}&reason=${encodeURIComponent(reason)}`
+    );
+    return response.data;
+  },
+
   rollbackIngestion: async (runId: string, filename: string, error: string = "User initiated rollback"): Promise<any> => {
     const response: AxiosResponse = await api.post(
       `/api/v1/rollback/ingestion?run_id=${runId}&filename=${filename}&error=${encodeURIComponent(error)}`

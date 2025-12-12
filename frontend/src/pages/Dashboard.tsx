@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Skeleton } from "../components/ui/skeleton";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell, BarChart, Bar
+  PieChart, Pie, Cell, BarChart, Bar, ScatterChart, Scatter, Area, AreaChart
 } from "recharts";
 import { RefreshCw, AlertCircle, CheckCircle2, TrendingUp, PieChart as PieChartIcon, BarChart3, Activity } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -347,27 +347,137 @@ export default function Dashboard() {
                               successRate: d.allTxns > 0 ? Math.round((d.reconciled / d.allTxns) * 100) : 0
                             })) : []}>
                               <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
-                              <XAxis 
-                                dataKey="month" 
+                              <XAxis
+                                dataKey="month"
                                 tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
                                 stroke="hsl(var(--border))"
                               />
-                              <YAxis 
-                                domain={[0, 100]} 
+                              <YAxis
+                                domain={[0, 100]}
                                 tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
                                 stroke="hsl(var(--border))"
                               />
-                              <Tooltip 
+                              <Tooltip
                                 formatter={(value) => `${value}%`}
-                                contentStyle={{ 
-                                  backgroundColor: "hsl(var(--background))", 
-                                  border: "1px solid hsl(var(--border))", 
+                                contentStyle={{
+                                  backgroundColor: "hsl(var(--background))",
+                                  border: "1px solid hsl(var(--border))",
                                   borderRadius: "8px",
                                   boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)"
                                 }}
                               />
                               <Bar dataKey="successRate" fill={CHART_COLORS.matched} name="Success Rate %" radius={[6, 6, 0, 0]} />
                             </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CarouselItem>
+
+                      {/* Scatter Diagram */}
+                      <CarouselItem className="pl-2 md:pl-4 md:basis-full">
+                        <div className="p-4">
+                          <h3 className="text-center font-semibold mb-2 text-foreground text-sm">Transaction Scatter Analysis</h3>
+                          <ResponsiveContainer width="100%" height={280}>
+                            <ScatterChart data={historicalData && historicalData.length > 0 ? historicalData.map((d, index) => ({
+                              x: index + 1,
+                              y: d.allTxns,
+                              z: d.reconciled,
+                              month: d.month
+                            })) : []}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+                              <XAxis
+                                type="number"
+                                dataKey="x"
+                                name="Month"
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
+                              <YAxis
+                                type="number"
+                                dataKey="y"
+                                name="All Transactions"
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
+                              <Tooltip
+                                cursor={{ strokeDasharray: '3 3' }}
+                                contentStyle={{
+                                  backgroundColor: "hsl(var(--background))",
+                                  border: "1px solid hsl(var(--border))",
+                                  borderRadius: "8px",
+                                  boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)"
+                                }}
+                                formatter={(value, name) => [value.toLocaleString(), name]}
+                                labelFormatter={(label) => `Month ${label}`}
+                              />
+                              <Scatter
+                                name="All Transactions"
+                                dataKey="y"
+                                fill={CHART_COLORS.brandSky}
+                              />
+                            </ScatterChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CarouselItem>
+
+                      {/* Stock-like Line Chart (Area Chart) */}
+                      <CarouselItem className="pl-2 md:pl-4 md:basis-full">
+                        <div className="p-4">
+                          <h3 className="text-center font-semibold mb-2 text-foreground text-sm">Reconciliation Performance</h3>
+                          <ResponsiveContainer width="100%" height={280}>
+                            <AreaChart data={historicalData && historicalData.length > 0 ? historicalData.map(d => ({
+                              ...d,
+                              successRate: d.allTxns > 0 ? Math.round((d.reconciled / d.allTxns) * 100) : 0,
+                              unmatchedRate: d.allTxns > 0 ? Math.round((d.allTxns - d.reconciled) / d.allTxns * 100) : 0
+                            })) : []}>
+                              <defs>
+                                <linearGradient id="colorSuccess" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor={CHART_COLORS.matched} stopOpacity={0.8}/>
+                                  <stop offset="95%" stopColor={CHART_COLORS.matched} stopOpacity={0.1}/>
+                                </linearGradient>
+                                <linearGradient id="colorUnmatched" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor={CHART_COLORS.unmatched} stopOpacity={0.8}/>
+                                  <stop offset="95%" stopColor={CHART_COLORS.unmatched} stopOpacity={0.1}/>
+                                </linearGradient>
+                              </defs>
+                              <XAxis
+                                dataKey="month"
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
+                              <YAxis
+                                domain={[0, 100]}
+                                tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                                stroke="hsl(var(--border))"
+                              />
+                              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+                              <Tooltip
+                                formatter={(value) => `${value}%`}
+                                contentStyle={{
+                                  backgroundColor: "hsl(var(--background))",
+                                  border: "1px solid hsl(var(--border))",
+                                  borderRadius: "8px",
+                                  boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)"
+                                }}
+                              />
+                              <Area
+                                type="monotone"
+                                dataKey="successRate"
+                                stackId="1"
+                                stroke={CHART_COLORS.matched}
+                                fillOpacity={1}
+                                fill="url(#colorSuccess)"
+                                name="Success Rate %"
+                              />
+                              <Area
+                                type="monotone"
+                                dataKey="unmatchedRate"
+                                stackId="1"
+                                stroke={CHART_COLORS.unmatched}
+                                fillOpacity={1}
+                                fill="url(#colorUnmatched)"
+                                name="Unmatched Rate %"
+                              />
+                            </AreaChart>
                           </ResponsiveContainer>
                         </div>
                       </CarouselItem>

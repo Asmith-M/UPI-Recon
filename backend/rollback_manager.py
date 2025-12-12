@@ -16,11 +16,11 @@ logger = get_logger(__name__)
 
 class RollbackLevel(Enum):
     """Rollback operation levels"""
-    FULL = "full"                    # Complete process rollback (upload to recon)
-    INGESTION = "ingestion"          # File validation failure
-    MID_RECON = "mid_recon"          # During reconciliation
+    WHOLE_PROCESS = "whole_process"  # Complete process rollback (upload to recon)
+    INGESTION = "ingestion"          # File ingestion rollback
+    MID_RECON = "mid_recon"          # Mid-reconciliation rollback
     CYCLE_WISE = "cycle_wise"        # Specific NPCI cycle
-    ACCOUNTING = "accounting"        # Voucher generation failure
+    ACCOUNTING = "accounting"        # Accounting/voucher rollback
 
 
 class RollbackStatus(Enum):
@@ -51,8 +51,26 @@ class RollbackManager:
         """Log rollback operation with timestamp and details"""
         with open(self.rollback_history_file, 'r') as f:
             history = json.load(f)
-        
-        rollback_id = f"ROLLBACK_{run_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        # Generate a more user-friendly rollback ID
+        # Format: RB_{LEVEL}_{SEQUENTIAL_NUMBER}_{SHORT_DATE}
+        level_short = {
+            RollbackLevel.WHOLE_PROCESS: "FULL",
+            RollbackLevel.INGESTION: "ING",
+            RollbackLevel.MID_RECON: "MID",
+            RollbackLevel.CYCLE_WISE: "CYC",
+            RollbackLevel.ACCOUNTING: "ACC"
+        }.get(rollback_level, "UNK")
+
+        # Get next sequential number for this level
+        existing_ids = [r.get("rollback_id", "") for r in history if r.get("level") == rollback_level.value]
+        sequential_num = len(existing_ids) + 1
+
+        # Short date format (MMDD)
+        short_date = datetime.now().strftime('%m%d')
+
+        rollback_id = f"RB_{level_short}_{sequential_num:03d}_{short_date}"
+
         record = {
             "rollback_id": rollback_id,
             "level": rollback_level.value,
@@ -61,11 +79,11 @@ class RollbackManager:
             "status": RollbackStatus.PENDING.value,
             "details": details
         }
-        
+
         history.append(record)
         with open(self.rollback_history_file, 'w') as f:
             json.dump(history, f, indent=2)
-        
+
         return rollback_id
     
     def _update_rollback_status(self, rollback_id: str, status: RollbackStatus):
@@ -86,8 +104,8 @@ class RollbackManager:
     # STAGE 0: FULL ROLLBACK
     # ========================================================================
 
-    def full_rollback(self, run_id: str, reason: str,
-                     confirmation_required: bool = True) -> Dict:
+    def whole_process_rollback(self, run_id: str, reason: str,
+                              confirmation_required: bool = True) -> Dict:
         """
         Complete rollback of the entire process from upload to reconciliation
         Removes all output files and resets to pre-upload state
@@ -102,9 +120,9 @@ class RollbackManager:
             Dict with rollback details
         """
         # Validate rollback operation
-        can_rollback, validation_msg = self._validate_rollback_allowed(run_id, RollbackLevel.FULL)
+        can_rollback, validation_msg = self._validate_rollback_allowed(run_id, RollbackLevel.WHOLE_PROCESS)
         if not can_rollback:
-            raise ValueError(f"Full rollback not allowed: {validation_msg}")
+            raise ValueError(f"Whole process rollback not allowed: {validation_msg}")
 
         # Validate reason
         if not reason or not reason.strip():
@@ -125,7 +143,7 @@ class RollbackManager:
             }
 
         rollback_id = self._log_rollback(
-            RollbackLevel.FULL,
+            RollbackLevel.WHOLE_PROCESS,
             run_id,
             {
                 "reason": reason,

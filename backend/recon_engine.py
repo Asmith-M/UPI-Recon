@@ -36,6 +36,7 @@ class ReconciliationEngine:
         self.partial_match_records = []
         self.orphan_records = []
         self.exceptions = []
+        self.unmatched_records = []
         self.settlement_engine = SettlementEngine(output_dir)
     
     def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -90,6 +91,7 @@ class ReconciliationEngine:
         self.partial_match_records = []
         self.orphan_records = []
         self.exceptions = []
+        self.unmatched_records = []
 
     def _preprocess_dataframes(self, dataframes: List[pd.DataFrame]) -> List[pd.DataFrame]:
         """Preprocessing and validation of the input dataframes."""
@@ -246,6 +248,9 @@ class ReconciliationEngine:
         """Generates a summary of the reconciliation results."""
         logger.info(f"Reconciliation completed: {len(results)} total RRNs processed")
         logger.info(f"Results: {len(self.matched_records)} matched, {len(self.partial_match_records)} partial, {len(self.orphan_records)} orphan, {len(self.exceptions)} exceptions")
+
+        # Populate unmatched_records as combination of partial_match_records and orphan_records
+        self.unmatched_records = self.partial_match_records + self.orphan_records
 
         if not results:
             logger.warning("Reconciliation completed but no results generated")

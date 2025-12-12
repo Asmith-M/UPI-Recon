@@ -1458,6 +1458,31 @@ async def cycle_wise_rollback(run_id: str, cycle_id: str):
 
     return result
 
+@app.post("/api/v1/rollback/whole-process")
+async def whole_process_rollback(run_id: str, reason: str):
+    """
+    Complete rollback of the entire reconciliation process
+    Resets all matched transactions, vouchers, and processed data to initial state
+
+    Args:
+        run_id: Current run identifier
+        reason: Reason for rollback (e.g., 'Complete process reset')
+    """
+    # Log the rollback attempt
+    audit_trail.log_rollback_operation(run_id, "whole_process", "SYSTEM", "started")
+
+    can_roll, msg = rollback_manager.can_rollback(run_id, RollbackLevel.WHOLE_PROCESS)
+    if not can_roll:
+        audit_trail.log_rollback_operation(run_id, "whole_process", "SYSTEM", "failed", details={"error": msg})
+        raise HTTPException(status_code=400, detail=msg)
+
+    result = rollback_manager.whole_process_rollback(run_id, reason)
+
+    # Log successful rollback
+    audit_trail.log_rollback_operation(run_id, "whole_process", "SYSTEM", "completed")
+
+    return result
+
 @app.post("/api/v1/rollback/accounting")
 async def accounting_rollback(run_id: str, reason: str,
                              voucher_ids: Optional[List[str]] = Query(None)):
