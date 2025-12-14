@@ -1090,7 +1090,7 @@ async def get_latest_report():
     if not os.path.exists(OUTPUT_DIR):
         raise HTTPException(status_code=404, detail="Output directory not found")
     
-    run_folders = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("RUN_")]
+    run_folders = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("RUN_") and not f.endswith(".lock")]
     if not run_folders:
         raise HTTPException(status_code=404, detail="No reconciliation runs found")
     
@@ -1108,7 +1108,7 @@ async def get_latest_adjustments():
     if not os.path.exists(OUTPUT_DIR):
         raise HTTPException(status_code=404, detail="Output directory not found")
     
-    run_folders = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("RUN_")]
+    run_folders = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("RUN_") and not f.endswith(".lock")]
     if not run_folders:
         raise HTTPException(status_code=404, detail="No reconciliation runs found")
     
@@ -1126,7 +1126,7 @@ async def get_latest_raw():
     if not os.path.exists(OUTPUT_DIR):
         raise HTTPException(status_code=404, detail="Output directory not found")
     
-    run_folders = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("RUN_")]
+    run_folders = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("RUN_") and not f.endswith(".lock")]
     if not run_folders:
         raise HTTPException(status_code=404, detail="No reconciliation runs found")
     
@@ -1299,8 +1299,20 @@ async def rollback_reconciliation(run_id: str = None):
 @app.get("/api/v1/summary")
 async def get_reconciliation_summary():
     """Get reconciliation summary for dashboard"""
-    run_folders = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("RUN_")]
-    if not run_folders:
+    run_folders = sorted([f for f in os.listdir(OUTPUT_DIR) if f.startswith("RUN_") and not f.endswith(".lock")], reverse=True)
+    
+    latest_run = None
+    data = None
+    
+    for run_folder in run_folders:
+        json_path = os.path.join(OUTPUT_DIR, run_folder, "recon_output.json")
+        if os.path.exists(json_path):
+            latest_run = run_folder
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            break
+            
+    if not latest_run or data is None:
         return {
             "total_transactions": 0,
             "matched": 0,
@@ -1309,14 +1321,8 @@ async def get_reconciliation_summary():
             "status": "no_data"
         }
     
-    latest_run = max(run_folders)
-    json_path = os.path.join(OUTPUT_DIR, latest_run, "recon_output.json")
-    
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-    
-    matched = len([k for k, v in data.items() if v['status'] == 'MATCHED'])
-    unmatched = len([k for k, v in data.items() if v['status'] in ['PARTIAL_MATCH', 'ORPHAN']])
+    matched = len([k for k, v in data.items() if isinstance(v, dict) and v.get('status') == 'MATCHED'])
+    unmatched = len([k for k, v in data.items() if isinstance(v, dict) and v.get('status') in ['PARTIAL_MATCH', 'ORPHAN']])
     
     return {
         "total_transactions": len(data),
@@ -1345,21 +1351,25 @@ async def get_historical_summary():
     for run_folder in recent_runs:
         json_path = os.path.join(OUTPUT_DIR, run_folder, "recon_output.json")
         if os.path.exists(json_path):
-            with open(json_path, 'r') as f:
-                data = json.load(f)
+            try:
+                with open(json_path, 'r') as f:
+                    data = json.load(f)
 
-            matched = len([k for k, v in data.items() if v['status'] == 'MATCHED'])
-            unmatched = len([k for k, v in data.items() if v['status'] in ['PARTIAL_MATCH', 'ORPHAN']])
+                matched = len([k for k, v in data.items() if isinstance(v, dict) and v.get('status') == 'MATCHED'])
+                unmatched = len([k for k, v in data.items() if isinstance(v, dict) and v.get('status') in ['PARTIAL_MATCH', 'ORPHAN']])
 
-            # Extract date from run folder name (RUN_YYYYMMDD_HHMMSS)
-            date_str = run_folder.replace("RUN_", "").split("_")[0]
-            month_year = f"{date_str[4:6]}-{date_str[2:4]}"  # MM-YY format
+                # Extract date from run folder name (RUN_YYYYMMDD_HHMMSS)
+                date_str = run_folder.replace("RUN_", "").split("_")[0]
+                month_year = f"{date_str[4:6]}-{date_str[2:4]}"  # MM-YY format
 
-            historical_data.append({
-                "month": month_year,
-                "allTxns": len(data),
-                "reconciled": matched
-            })
+                historical_data.append({
+                    "month": month_year,
+                    "allTxns": len(data),
+                    "reconciled": matched
+                })
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"Could not process {json_path} for historical summary: {e}")
+                continue
 
     # Sort by month
     historical_data.sort(key=lambda x: x["month"])
@@ -1476,7 +1486,7 @@ async def whole_process_rollback(run_id: str, reason: str):
         audit_trail.log_rollback_operation(run_id, "whole_process", "SYSTEM", "failed", details={"error": msg})
         raise HTTPException(status_code=400, detail=msg)
 
-    result = rollback_manager.whole_process_rollback(run_id, reason)
+    result = rollback_manager.whole_process_rollback(run_id, reason, confirmation_required=False)
 
     # Log successful rollback
     audit_trail.log_rollback_operation(run_id, "whole_process", "SYSTEM", "completed")

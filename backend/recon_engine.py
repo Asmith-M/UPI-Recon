@@ -187,7 +187,8 @@ class ReconciliationEngine:
             CBS: None,
             SWITCH: None,
             NPCI: None,
-            'status': UNKNOWN
+            'status': UNKNOWN,
+            'cycle_id': None
         }
 
     def _populate_record_by_source(self, record: Dict, group: pd.DataFrame):
@@ -202,6 +203,12 @@ class ReconciliationEngine:
                     'rc': row.get(RC, ''),
                     'tran_type': row.get(TRAN_TYPE, '')
                 }
+        
+        # Get the first available cycle_id from the group
+        if 'cycle_id' in group.columns:
+            cycle_ids = group['cycle_id'].dropna().unique()
+            if len(cycle_ids) > 0:
+                record['cycle_id'] = cycle_ids[0]
 
     def _classify_record(self, rrn: str, record: Dict, sources: set):
         """Classifies a record based on its status (e.g., MATCHED, MISMATCH)."""

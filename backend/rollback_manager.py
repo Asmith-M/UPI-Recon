@@ -7,6 +7,7 @@ import os
 import json
 import shutil
 import portalocker
+import stat
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Callable
 from enum import Enum
@@ -192,7 +193,12 @@ class RollbackManager:
                         for dir_name in dirs:
                             deleted_dirs.append(os.path.join(root, dir_name))
 
-                    shutil.rmtree(output_dir)
+                    def handle_remove_readonly(func, path, exc):
+                        if os.path.exists(path):
+                            os.chmod(path, stat.S_IWRITE)
+                            func(path)
+                            
+                    shutil.rmtree(output_dir, onerror=handle_remove_readonly)
                     logger.info(f"Deleted output directory: {output_dir}")
                 except Exception as delete_error:
                     logger.error(f"Failed to delete output directory: {str(delete_error)}")
@@ -574,20 +580,6 @@ class RollbackManager:
                     recon_data["unmatched"] = original_unmatched + all_matched_txns
                     transactions_restored = [t.get("rrn") or t.get("txn_id") for t in all_matched_txns]
 
-            # Update status counters with rollback information
-            recon_data["summary"] = {
-                "total_matched": len(recon_data.get("matched", [])),
-                "total_unmatched": len(recon_data.get("unmatched", [])),
-                "last_rollback": {
-                    "rollback_id": rollback_id,
-                    "level": "mid_recon",
-                    "transactions_restored": len(transactions_restored),
-                    "error_message": error_message,
-                    "timestamp": datetime.now().isoformat()
-                },
-                "rollback_timestamp": datetime.now().isoformat()
-            }
-
             # Atomic save operation
             temp_file = recon_output_path + ".tmp"
             try:
@@ -760,45 +752,6 @@ class RollbackManager:
                 recon_data["matched"] = remaining_matched
                 recon_data["unmatched"] = restored_unmatched
 
-            # Update status counters with detailed rollback information
-            try:
-                # determine counts depending on data format
-                if isinstance(recon_data, dict) and not recon_data.get('matched') and not recon_data.get('unmatched'):
-                    matched_count = len([v for v in recon_data.values() if isinstance(v, dict) and v.get('status') == 'MATCHED'])
-                    unmatched_count = len([v for v in recon_data.values() if isinstance(v, dict) and v.get('status') in ['ORPHAN','PARTIAL_MATCH','PARTIAL_MISMATCH']])
-                    restored_count = len(transactions_restored)
-                else:
-                    matched_count = len(recon_data.get('matched', []))
-                    unmatched_count = len(recon_data.get('unmatched', []))
-                    restored_count = len(transactions_restored)
-
-                recon_data['summary'] = {
-                    'total_matched': matched_count,
-                    'total_unmatched': unmatched_count,
-                    'last_cycle_rollback': {
-                        'rollback_id': rollback_id,
-                        'cycle_id': cycle_id,
-                        'transactions_restored': restored_count,
-                        'timestamp': datetime.now().isoformat(),
-                        'confirmation_provided': not confirmation_required
-                    },
-                    'rollback_timestamp': datetime.now().isoformat()
-                }
-            except Exception:
-                # Fallback summary if something unexpected occurred
-                recon_data['summary'] = {
-                    'total_matched': 0,
-                    'total_unmatched': 0,
-                'last_cycle_rollback': {
-                    'rollback_id': rollback_id,
-                    'cycle_id': cycle_id,
-                    'transactions_restored': len(transactions_restored),
-                    'timestamp': datetime.now().isoformat(),
-                    'confirmation_provided': not confirmation_required
-                },
-                'rollback_timestamp': datetime.now().isoformat()
-                }
-
             # Atomic save operation
             temp_file = recon_output_path + ".tmp"
             try:
@@ -807,7 +760,7 @@ class RollbackManager:
                 os.replace(temp_file, recon_output_path)  # Atomic file replacement
                 logger.info(
                     f"Cycle-wise rollback for {cycle_id} completed. "
-                    f"{len(cycle_txns)} transactions restored."
+                    f"{len(transactions_restored)} transactions restored."
                 )
             except Exception as save_error:
                 if os.path.exists(temp_file):
@@ -1101,7 +1054,7 @@ class RollbackManager:
             return False, f"Run {run_id} not found"
 
         # Level-specific validations
-        if rollback_level == RollbackLevel.FULL:
+        if rollback_level == RollbackLevel.WHOLE_PROCESS:
             # Full rollback requires output directory to exist (something to rollback)
             output_dir = os.path.join(self.output_dir, run_id)
             if not os.path.exists(output_dir):

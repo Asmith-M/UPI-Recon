@@ -187,6 +187,16 @@ class FileHandler:
         except Exception as e:
             logger.warning(f"⚠️  Could not save file metadata: {e}")
     
+    def _extract_cycle_id(self, filename: str) -> str:
+        """Extracts cycle ID from filename."""
+        filename_lower = filename.lower()
+        parts = filename_lower.split('_')
+        valid_cycles = ['1a', '1b', '1c', '2a', '2b', '2c', '3a', '3b', '3c', '4']
+        for part in parts:
+            if part in valid_cycles:
+                return part.upper()
+        return None
+
     def load_files_for_recon(self, run_folder: str) -> List[pd.DataFrame]:
         """Load all files and add source column with smart column detection"""
         dataframes = []
@@ -218,18 +228,21 @@ class FileHandler:
             else:
                 continue
             
+            cycle_id = None
             if 'cbs' in filename.lower():
                 source = 'CBS'
             elif 'switch' in filename.lower():
                 source = 'SWITCH'
             elif 'npci' in filename.lower():
                 source = 'NPCI'
+                cycle_id = self._extract_cycle_id(filename)
             else:
                 source = 'OTHER'
             
             # Smart auto-map columns
             df = self._smart_map_columns(df)
             df['Source'] = source
+            df['cycle_id'] = cycle_id
             dataframes.append(df)
         return dataframes
     
