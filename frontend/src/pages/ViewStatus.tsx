@@ -224,11 +224,11 @@ export default function ViewStatus() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>File Name</TableHead>
-                      <TableHead className="text-center">Required</TableHead>
-                      <TableHead className="text-center">Uploaded</TableHead>
-                      <TableHead className="text-center">Success</TableHead>
-                      <TableHead className="text-center">Error</TableHead>
+                      <TableHead className="w-[40%]">File Name</TableHead>
+                      <TableHead className="text-center w-[15%]">Required</TableHead>
+                      <TableHead className="text-center w-[15%]">Uploaded</TableHead>
+                      <TableHead className="text-center w-[15%]">Success</TableHead>
+                      <TableHead className="text-center w-[15%]">Error</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -240,13 +240,21 @@ export default function ViewStatus() {
                         </TableCell>
                         <TableCell className="text-center">{file.uploaded}</TableCell>
                         <TableCell className="text-center">
-                          <Badge variant={file.success > 0 ? "default" : "secondary"} className="bg-green-600">
-                            {file.success}
-                          </Badge>
+                          {file.success > 0 ? (
+                            <div className="flex justify-center">
+                              <Badge variant="default" className="bg-green-600 text-white">
+                                {file.success}
+                              </Badge>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-center">
                           {file.error > 0 ? (
-                            <Badge variant="destructive">{file.error}</Badge>
+                            <div className="flex justify-center">
+                              <Badge variant="destructive">{file.error}</Badge>
+                            </div>
                           ) : (
                             <span className="text-muted-foreground">-</span>
                           )}

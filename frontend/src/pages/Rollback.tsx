@@ -4,7 +4,7 @@ import { Button } from "../components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { Loader2, RotateCcw, AlertTriangle, CheckCircle2, RefreshCw, Zap } from "lucide-react";
+import { Loader2, RotateCcw, AlertTriangle, CheckCircle2, RefreshCw, Zap, FolderOpen, BarChart3, Repeat } from "lucide-react";
 import { useToast } from "../hooks/use-toast";
 import { apiClient } from "../lib/api";
 import {
@@ -49,29 +49,28 @@ interface RollbackHistory {
   details: any;
 }
 
-type RollbackLevel = "ingestion" | "mid_recon" | "cycle_wise" | "accounting";
+type RollbackLevel = "whole_process" | "cycle_wise";
 
 export default function Rollback() {
   const { toast } = useToast();
-  
+
   // State for run history
   const [runHistory, setRunHistory] = useState<RunHistory[]>([]);
   const [loading, setLoading] = useState(true);
-  
+
   // State for granular rollback
   const [selectedRun, setSelectedRun] = useState<string>("");
-  const [rollbackLevel, setRollbackLevel] = useState<RollbackLevel>("ingestion");
-  const [failedFilename, setFailedFilename] = useState("");
+  const [rollbackLevel, setRollbackLevel] = useState<RollbackLevel>("whole_process");
   const [cycleId, setCycleId] = useState("");
   const [rollbackReason, setRollbackReason] = useState("");
-  
+
   // UI state
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [isRollingBack, setIsRollingBack] = useState(false);
   const [rollbackHistory, setRollbackHistory] = useState<RollbackHistory[]>([]);
   const [rollbackHistoryLoading, setRollbackHistoryLoading] = useState(false);
 
-  const NPCI_CYCLES = ['1C', '2C', '3C', '4C', '5C', '6C', '7C', '8C', '9C', '10C'];
+  const NPCI_CYCLES = ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C', '4'];
 
   useEffect(() => {
     fetchRunHistory();
@@ -81,30 +80,37 @@ export default function Rollback() {
   const fetchRunHistory = async () => {
     try {
       setLoading(true);
-      
+
       const historical = await apiClient.getHistoricalSummary();
-      
-      const history: RunHistory[] = historical.map((item: any) => {
+
+      // Create a map to ensure unique run_ids
+      const runMap = new Map<string, RunHistory>();
+
+      // Process historical data
+      historical.forEach((item: any) => {
         const runId = `RUN_${item.month.replace('-', '')}`;
-        return {
-          run_id: runId,
-          date: `2024-${item.month}`,
-          time: '12:00:00',
-          total_transactions: item.allTxns || 0,
-          matched: item.reconciled || 0,
-          unmatched: (item.allTxns || 0) - (item.reconciled || 0),
-          status: 'completed'
-        };
+        if (!runMap.has(runId)) {
+          runMap.set(runId, {
+            run_id: runId,
+            date: `2024-${item.month}`,
+            time: '12:00:00',
+            total_transactions: item.allTxns || 0,
+            matched: item.reconciled || 0,
+            unmatched: (item.allTxns || 0) - (item.reconciled || 0),
+            status: 'completed'
+          });
+        }
       });
 
+      // Try to get latest run details
       try {
         const summary = await apiClient.getSummary();
-        if (summary.run_id) {
+        if (summary.run_id && !runMap.has(summary.run_id)) {
           const runIdParts = summary.run_id.split('_');
           if (runIdParts.length >= 3) {
             const dateStr = runIdParts[1];
             const timeStr = runIdParts[2];
-            
+
             const latestRun: RunHistory = {
               run_id: summary.run_id,
               date: `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}`,
@@ -114,16 +120,18 @@ export default function Rollback() {
               unmatched: summary.unmatched,
               status: summary.status
             };
-            
-            const exists = history.some(h => h.run_id === summary.run_id);
-            if (!exists) {
-              history.unshift(latestRun);
-            }
+
+            runMap.set(summary.run_id, latestRun);
           }
         }
       } catch (error) {
         console.log("Could not fetch latest run details");
       }
+
+      // Convert map to array and sort by date descending
+      const history = Array.from(runMap.values()).sort((a, b) =>
+        new Date(b.date + ' ' + b.time).getTime() - new Date(a.date + ' ' + a.time).getTime()
+      );
 
       setRunHistory(history);
     } catch (error: any) {
@@ -142,13 +150,16 @@ export default function Rollback() {
   const fetchRollbackHistory = async () => {
     try {
       setRollbackHistoryLoading(true);
-      const response = await fetch("/api/v1/rollback/history");
-      if (response.ok) {
-        const data = await response.json();
-        setRollbackHistory(data.history || []);
-      }
+      const data = await apiClient.getRollbackHistory();
+      setRollbackHistory(data.history || []);
     } catch (error) {
       console.error("Error fetching rollback history:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load rollback history. Please try again.",
+        variant: "destructive"
+      });
+      setRollbackHistory([]);
     } finally {
       setRollbackHistoryLoading(false);
     }
@@ -166,29 +177,11 @@ export default function Rollback() {
 
     try {
       setIsRollingBack(true);
-      let response;
+      let result;
 
       switch (rollbackLevel) {
-        case "ingestion":
-          if (!failedFilename) {
-            toast({
-              title: "Error",
-              description: "Please specify the failed filename",
-              variant: "destructive"
-            });
-            return;
-          }
-          response = await fetch(
-            `/api/v1/rollback/ingestion?run_id=${selectedRun}&filename=${failedFilename}&error=User initiated rollback`,
-            { method: "POST" }
-          );
-          break;
-
-        case "mid_recon":
-          response = await fetch(
-            `/api/v1/rollback/mid-recon?run_id=${selectedRun}&error=${encodeURIComponent(rollbackReason || "Critical error during reconciliation")}`,
-            { method: "POST" }
-          );
+        case "whole_process":
+          result = await apiClient.rollbackWholeProcess(selectedRun, rollbackReason || "User initiated whole process rollback");
           break;
 
         case "cycle_wise":
@@ -200,39 +193,23 @@ export default function Rollback() {
             });
             return;
           }
-          response = await fetch(
-            `/api/v1/rollback/cycle-wise?run_id=${selectedRun}&cycle_id=${cycleId}`,
-            { method: "POST" }
-          );
-          break;
-
-        case "accounting":
-          response = await fetch(
-            `/api/v1/rollback/accounting?run_id=${selectedRun}&reason=${encodeURIComponent(rollbackReason || "User initiated accounting rollback")}`,
-            { method: "POST" }
-          );
+          result = await apiClient.rollbackCycleWise(selectedRun, cycleId);
           break;
 
         default:
           throw new Error("Invalid rollback level");
       }
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || "Rollback failed");
-      }
-
-      const result = await response.json();
-
       toast({
         title: "Success",
-        description: result.message || `${rollbackLevel} rollback completed successfully`,
+        description: result.message || `${rollbackLevel.replace('_', ' ')} rollback completed successfully`,
       });
 
       setShowConfirmDialog(false);
       resetForm();
       await Promise.all([fetchRunHistory(), fetchRollbackHistory()]);
     } catch (error: any) {
+      console.error("Rollback error:", error);
       toast({
         title: "Error",
         description: error.message || "Rollback failed. Please try again.",
@@ -245,19 +222,16 @@ export default function Rollback() {
 
   const resetForm = () => {
     setSelectedRun("");
-    setFailedFilename("");
     setCycleId("");
     setRollbackReason("");
   };
 
   const getRollbackLevelBadge = (level: string) => {
     const colors: Record<string, string> = {
-      ingestion: "bg-blue-500",
-      mid_recon: "bg-orange-500",
-      cycle_wise: "bg-purple-500",
-      accounting: "bg-green-500"
+      whole_process: "bg-red-500",
+      cycle_wise: "bg-purple-500"
     };
-    
+
     return (
       <Badge className={`${colors[level] || "bg-gray-500"} text-white`}>
         {level.replace('_', ' ').toUpperCase()}
@@ -274,7 +248,7 @@ export default function Rollback() {
     };
 
     const config = variants[status] || { variant: 'outline' as const, className: 'bg-gray-500 text-white' };
-    
+
     return (
       <Badge variant={config.variant} className={config.className}>
         {status.replace('_', ' ').toUpperCase()}
@@ -290,9 +264,9 @@ export default function Rollback() {
           <h1 className="text-3xl font-bold text-foreground">Granular Rollback Manager</h1>
           <p className="text-muted-foreground">Phase 3: Undo operations at any stage with full control</p>
         </div>
-        <Button 
-          variant="outline" 
-          size="sm" 
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => Promise.all([fetchRunHistory(), fetchRollbackHistory()])}
           disabled={loading || rollbackHistoryLoading}
           className="gap-2"
@@ -338,14 +312,14 @@ export default function Rollback() {
             <CardContent className="space-y-6">
               {/* Run Selection */}
               <div className="space-y-2">
-                <label className="text-sm font-medium">Select Run</label>
+                <label className="text-sm font-semibold text-slate-700">Select Run</label>
                 <Select value={selectedRun} onValueChange={setSelectedRun}>
-                  <SelectTrigger>
+                  <SelectTrigger className="border-slate-300">
                     <SelectValue placeholder="Select a reconciliation run" />
                   </SelectTrigger>
                   <SelectContent>
-                    {runHistory.map((run) => (
-                      <SelectItem key={run.run_id} value={run.run_id}>
+                    {runHistory.map((run, index) => (
+                      <SelectItem key={`${run.run_id}-${index}`} value={run.run_id}>
                         {run.run_id} - {run.date} {run.time} ({run.matched}/{run.total_transactions} matched)
                       </SelectItem>
                     ))}
@@ -354,68 +328,43 @@ export default function Rollback() {
               </div>
 
               {/* Rollback Level Selection */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Rollback Level</label>
+              <div className="space-y-3">
+                <label className="text-sm font-semibold text-slate-700">Rollback Level</label>
                 <div className="grid grid-cols-2 gap-3">
-                  <Button
-                    variant={rollbackLevel === "ingestion" ? "default" : "outline"}
-                    className="h-24 flex flex-col items-center justify-center"
-                    onClick={() => setRollbackLevel("ingestion")}
+                  <button
+                    onClick={() => setRollbackLevel("whole_process")}
+                    className={`h-24 flex flex-col items-center justify-center rounded-lg border-2 transition-all duration-200 ${
+                      rollbackLevel === "whole_process"
+                        ? "border-red-500 bg-red-50 shadow-md"
+                        : "border-slate-200 bg-white hover:border-red-300 hover:bg-red-50"
+                    }`}
                   >
-                    <div className="text-2xl mb-1">📁</div>
-                    <div className="text-xs font-semibold">Ingestion</div>
-                    <div className="text-xs text-muted-foreground">File validation</div>
-                  </Button>
-                  
-                  <Button
-                    variant={rollbackLevel === "mid_recon" ? "default" : "outline"}
-                    className="h-24 flex flex-col items-center justify-center"
-                    onClick={() => setRollbackLevel("mid_recon")}
-                  >
-                    <div className="text-2xl mb-1">⚡</div>
-                    <div className="text-xs font-semibold">Mid-Recon</div>
-                    <div className="text-xs text-muted-foreground">Critical error</div>
-                  </Button>
-                  
-                  <Button
-                    variant={rollbackLevel === "cycle_wise" ? "default" : "outline"}
-                    className="h-24 flex flex-col items-center justify-center"
+                    <RotateCcw className="h-8 w-8 mb-1 text-red-600" />
+                    <div className="text-xs font-semibold text-slate-800">Whole Process</div>
+                    <div className="text-xs text-slate-500">Complete reset</div>
+                  </button>
+
+                  <button
                     onClick={() => setRollbackLevel("cycle_wise")}
+                    className={`h-24 flex flex-col items-center justify-center rounded-lg border-2 transition-all duration-200 ${
+                      rollbackLevel === "cycle_wise"
+                        ? "border-purple-500 bg-purple-50 shadow-md"
+                        : "border-slate-200 bg-white hover:border-purple-300 hover:bg-purple-50"
+                    }`}
                   >
-                    <div className="text-2xl mb-1">🔄</div>
-                    <div className="text-xs font-semibold">Cycle-Wise</div>
-                    <div className="text-xs text-muted-foreground">NPCI cycle</div>
-                  </Button>
-                  
-                  <Button
-                    variant={rollbackLevel === "accounting" ? "default" : "outline"}
-                    className="h-24 flex flex-col items-center justify-center"
-                    onClick={() => setRollbackLevel("accounting")}
-                  >
-                    <div className="text-2xl mb-1">📊</div>
-                    <div className="text-xs font-semibold">Accounting</div>
-                    <div className="text-xs text-muted-foreground">Voucher reset</div>
-                  </Button>
+                    <Repeat className="h-8 w-8 mb-1 text-purple-600" />
+                    <div className="text-xs font-semibold text-slate-800">Cycle-Wise</div>
+                    <div className="text-xs text-slate-500">NPCI cycle</div>
+                  </button>
                 </div>
               </div>
 
               {/* Level-Specific Inputs */}
-              {rollbackLevel === "ingestion" && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Failed Filename</label>
-                  <Input 
-                    placeholder="e.g., cbs_inward_20241204.csv"
-                    value={failedFilename}
-                    onChange={(e) => setFailedFilename(e.target.value)}
-                  />
-                </div>
-              )}
-
               {rollbackLevel === "cycle_wise" && (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">NPCI Cycle ID</label>
+                  <label className="text-sm font-semibold text-slate-700">NPCI Cycle ID</label>
                   <Select value={cycleId} onValueChange={setCycleId}>
-                    <SelectTrigger>
+                    <SelectTrigger className="border-slate-300">
                       <SelectValue placeholder="Select NPCI cycle" />
                     </SelectTrigger>
                     <SelectContent>
@@ -429,19 +378,8 @@ export default function Rollback() {
                 </div>
               )}
 
-              {(rollbackLevel === "mid_recon" || rollbackLevel === "accounting") && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Reason for Rollback</label>
-                  <Input 
-                    placeholder="Provide reason for this rollback"
-                    value={rollbackReason}
-                    onChange={(e) => setRollbackReason(e.target.value)}
-                  />
-                </div>
-              )}
-
               {/* Submit Button */}
-              <Button 
+              <Button
                 size="lg"
                 className="w-full bg-brand-blue hover:bg-brand-mid"
                 onClick={() => setShowConfirmDialog(true)}
@@ -466,36 +404,18 @@ export default function Rollback() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Card>
               <CardContent className="pt-6 space-y-2">
-                <h3 className="font-semibold flex items-center gap-2"><span>📁</span> Ingestion Rollback</h3>
+                <h3 className="font-semibold flex items-center gap-2"><RotateCcw className="h-5 w-5 text-red-600" /> Whole Process Rollback</h3>
                 <p className="text-sm text-muted-foreground">
-                  Removes a file that failed validation during upload. Other uploaded files are preserved.
+                  <strong>WARNING:</strong> Complete reset of the entire reconciliation process. All matched transactions, vouchers, and processed data will be restored to initial state.
                 </p>
               </CardContent>
             </Card>
-            
+
             <Card>
               <CardContent className="pt-6 space-y-2">
-                <h3 className="font-semibold flex items-center gap-2"><span>⚡</span> Mid-Recon Rollback</h3>
-                <p className="text-sm text-muted-foreground">
-                  Restores uncommitted transactions after critical errors (DB crash, connection loss) back to unmatched state.
-                </p>
-              </CardContent>
-            </Card>
-            
-            <Card>
-              <CardContent className="pt-6 space-y-2">
-                <h3 className="font-semibold flex items-center gap-2"><span>🔄</span> Cycle-Wise Rollback</h3>
+                <h3 className="font-semibold flex items-center gap-2"><Repeat className="h-5 w-5 text-purple-600" /> Cycle-Wise Rollback</h3>
                 <p className="text-sm text-muted-foreground">
                   Rolls back a specific NPCI cycle (1A-1C, 2A-2C, 3A-3C, 4) for reprocessing without affecting others.
-                </p>
-              </CardContent>
-            </Card>
-            
-            <Card>
-              <CardContent className="pt-6 space-y-2">
-                <h3 className="font-semibold flex items-center gap-2"><span>📊</span> Accounting Rollback</h3>
-                <p className="text-sm text-muted-foreground">
-                  Resets vouchers from settled state back to matched/pending when CBS upload fails.
                 </p>
               </CardContent>
             </Card>
@@ -577,8 +497,8 @@ export default function Rollback() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {runHistory.map((run) => (
-                        <TableRow key={run.run_id}>
+                      {runHistory.map((run, index) => (
+                        <TableRow key={`${run.run_id}-${index}`}>
                           <TableCell className="font-mono font-medium">{run.run_id}</TableCell>
                           <TableCell>{run.date}</TableCell>
                           <TableCell>{run.time}</TableCell>
@@ -615,38 +535,26 @@ export default function Rollback() {
               <AlertTriangle className="w-5 h-5 text-orange-600" />
               Confirm {rollbackLevel.replace('_', ' ').toUpperCase()} Rollback
             </AlertDialogTitle>
-            <AlertDialogDescription className="space-y-3">
-              <p>
-                Are you sure you want to perform a <strong>{rollbackLevel.replace('_', ' ')}</strong> rollback on <strong>{selectedRun}</strong>?
-              </p>
-              {rollbackLevel === "ingestion" && (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <p className="text-sm text-blue-800">
-                    File <strong>{failedFilename}</strong> will be removed from this run.
-                  </p>
-                </div>
-              )}
-              {rollbackLevel === "cycle_wise" && (
-                <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
-                  <p className="text-sm text-purple-800">
-                    Cycle <strong>{cycleId}</strong> transactions will be restored to unmatched state for reprocessing.
-                  </p>
-                </div>
-              )}
-              {rollbackLevel === "mid_recon" && (
-                <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
-                  <p className="text-sm text-orange-800">
-                    All uncommitted transactions will be restored to unmatched state.
-                  </p>
-                </div>
-              )}
-              {rollbackLevel === "accounting" && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                  <p className="text-sm text-green-800">
-                    Vouchers will be reset from settled state to matched/pending.
-                  </p>
-                </div>
-              )}
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Are you sure you want to perform a <strong>{rollbackLevel.replace('_', ' ')}</strong> rollback on <strong>{selectedRun}</strong>?
+                </p>
+                {rollbackLevel === "whole_process" && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                    <p className="text-sm text-red-800">
+                      <strong>WARNING:</strong> This will completely reset the entire reconciliation process for this run, including all matched transactions, vouchers, and processed data.
+                    </p>
+                  </div>
+                )}
+                {rollbackLevel === "cycle_wise" && (
+                  <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
+                    <p className="text-sm text-purple-800">
+                      Cycle <strong>{cycleId}</strong> transactions will be restored to unmatched state for reprocessing.
+                    </p>
+                  </div>
+                )}
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

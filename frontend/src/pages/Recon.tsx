@@ -9,7 +9,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { ScrollArea } from "../components/ui/scroll-area";
-import { Loader2 } from "lucide-react";
+import { Loader2, CheckCircle2, Clock } from "lucide-react";
 import { apiClient } from "../lib/api";
 import { useToast } from "../hooks/use-toast";
 
@@ -162,14 +162,20 @@ export default function Recon() {
                   <p className="text-sm text-muted-foreground">
                     Run ID: {summary.run_id}
                   </p>
-                  <p className="text-sm text-muted-foreground">
-                    Status:{" "}
-                    {reconciliating
-                      ? "⏳ Running..."
-                      : summary.status === "completed"
-                      ? "✓ Completed"
-                      : summary.status}
-                  </p>
+                  <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                    <span>Status:</span>
+                    {reconciliating ? (
+                      <span className="flex items-center gap-1">
+                        <Clock className="h-4 w-4 animate-pulse" /> Running...
+                      </span>
+                    ) : summary.status === "completed" ? (
+                      <span className="flex items-center gap-1 text-green-600">
+                        <CheckCircle2 className="h-4 w-4" /> Completed
+                      </span>
+                    ) : (
+                      <span>{summary.status}</span>
+                    )}
+                  </div>
                 </div>
                 <div className="text-right">
                   <div className="text-3xl font-bold text-green-600">

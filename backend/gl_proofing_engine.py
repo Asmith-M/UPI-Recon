@@ -1,7 +1,3 @@
-"""
-GL Justification & Proofing Engine - Phase 3 Task 4
-Reconciles day-zero to day-end GL with variance bridging and proofing reports
-"""
 
 import json
 import os

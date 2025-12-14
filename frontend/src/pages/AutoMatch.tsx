@@ -6,7 +6,7 @@ import { Label } from "../components/ui/label";
 import { Switch } from "../components/ui/switch";
 import { Slider } from "../components/ui/slider";
 import { Separator } from "../components/ui/separator";
-import { Save, RefreshCw, Settings, Info } from "lucide-react";
+import { Save, RefreshCw, Settings, Info, CheckCircle2, X } from "lucide-react";
 import { useToast } from "../hooks/use-toast";
 import { apiClient } from "../lib/api";
 import {
@@ -260,10 +260,10 @@ export default function AutoMatch() {
             <div className="space-y-2">
               <h4 className="text-sm font-semibold">Matching Rules</h4>
               <div className="text-xs text-muted-foreground space-y-2">
-                <p>✓ RRN must match exactly</p>
-                <p>✓ Amount difference ≤ ₹{amountTolerance.toFixed(2)}</p>
-                <p>✓ Date difference ≤ {dateToleranceDays} day{dateToleranceDays !== 1 ? 's' : ''}</p>
-                <p>✓ All three systems must have the transaction</p>
+                <p className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-green-600" /> RRN must match exactly</p>
+                <p className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-green-600" /> Amount difference ≤ ₹{amountTolerance.toFixed(2)}</p>
+                <p className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-green-600" /> Date difference ≤ {dateToleranceDays} day{dateToleranceDays !== 1 ? 's' : ''}</p>
+                <p className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-green-600" /> All three systems must have the transaction</p>
               </div>
             </div>
 
@@ -293,7 +293,9 @@ export default function AutoMatch() {
                 <p>Switch: ₹1000.00, 2024-01-15</p>
                 <p>NPCI: ₹1000.00, 2024-01-15</p>
               </div>
-              <div className="text-xs font-semibold text-green-600">✓ Will Match</div>
+              <div className="text-xs font-semibold text-green-600 flex items-center gap-1">
+                <CheckCircle2 className="h-4 w-4" /> Will Match
+              </div>
             </div>
 
             <div className="p-4 border rounded-lg space-y-2">
@@ -303,8 +305,12 @@ export default function AutoMatch() {
                 <p>Switch: ₹1000.50, 2024-01-15</p>
                 <p>NPCI: ₹1000.00, 2024-01-16</p>
               </div>
-              <div className={`text-xs font-semibold ${amountTolerance >= 0.5 && dateToleranceDays >= 1 ? 'text-green-600' : 'text-red-600'}`}>
-                {amountTolerance >= 0.5 && dateToleranceDays >= 1 ? '✓ Will Match' : '✗ Will Not Match'}
+              <div className={`text-xs font-semibold flex items-center gap-1 ${amountTolerance >= 0.5 && dateToleranceDays >= 1 ? 'text-green-600' : 'text-red-600'}`}>
+                {amountTolerance >= 0.5 && dateToleranceDays >= 1 ? (
+                  <><CheckCircle2 className="h-4 w-4" /> Will Match</>
+                ) : (
+                  <><X className="h-4 w-4" /> Will Not Match</>
+                )}
               </div>
             </div>
 

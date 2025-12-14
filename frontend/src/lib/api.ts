@@ -212,9 +212,12 @@ export const apiClient = {
   },
 
   // Force Match
-  forceMatch: async (rrn: string, source1: string, source2: string, action: string = 'match'): Promise<ForceMatchResponse> => {
+  forceMatch: async (rrn: string, source1: string, source2: string, action: string = 'match', lhsColumn?: string, rhsColumn?: string): Promise<ForceMatchResponse> => {
+    const params: any = { rrn, source1, source2, action };
+    if (lhsColumn) params.lhs_column = lhsColumn;
+    if (rhsColumn) params.rhs_column = rhsColumn;
     const response: AxiosResponse<ForceMatchResponse> = await api.post('/api/v1/force-match', null, {
-      params: { rrn, source1, source2, action },
+      params,
     });
     return response.data;
   },
@@ -267,6 +270,13 @@ export const apiClient = {
   },
 
   // Rollback Operations (Phase 3)
+  rollbackWholeProcess: async (runId: string, reason: string = "User initiated whole process rollback"): Promise<any> => {
+    const response: AxiosResponse = await api.post(
+      `/api/v1/rollback/whole-process?run_id=${runId}&reason=${encodeURIComponent(reason)}`
+    );
+    return response.data;
+  },
+
   rollbackIngestion: async (runId: string, filename: string, error: string = "User initiated rollback"): Promise<any> => {
     const response: AxiosResponse = await api.post(
       `/api/v1/rollback/ingestion?run_id=${runId}&filename=${filename}&error=${encodeURIComponent(error)}`
