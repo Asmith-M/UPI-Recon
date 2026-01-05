@@ -179,6 +179,9 @@ class AuditTrail:
     def _save_entry(self, entry: AuditEntry):
         """Save an audit entry to file"""
         try:
+            # Ensure audit log directory exists
+            os.makedirs(self.audit_log_dir, exist_ok=True)
+            
             # Determine which file to save to (based on date)
             date_str = datetime.now().strftime("%Y%m%d")
             filepath = os.path.join(self.audit_log_dir, f"audit_trail_{date_str}.json")

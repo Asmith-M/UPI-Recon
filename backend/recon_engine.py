@@ -6,6 +6,7 @@ from datetime import datetime
 from loguru import logger
 from settlement_engine import SettlementEngine
 from config import UPLOAD_DIR as CFG_UPLOAD_DIR
+from reporting import write_report
 
 # Constants
 CBS = 'cbs'
@@ -399,6 +400,414 @@ class ReconciliationEngine:
         logger.info(f"Reconciliation completed: {len(results)} total RRNs processed")
         logger.info(f"Results: {len(self.matched_records)} matched, {len(self.partial_match_records)} partial, {len(self.orphan_records)} orphan, {len(self.exceptions)} exceptions")
 
+    # -------------------------
+    # Reporting / Export helpers
+    # -------------------------
+    def _ensure_reports_dir(self, run_folder: str):
+        import os
+        reports_dir = os.path.join(run_folder, 'reports')
+        os.makedirs(reports_dir, exist_ok=True)
+        return reports_dir
+
+    def _parse_date(self, date_str: str):
+        """Attempt to parse a date string into a date object. Returns None on failure."""
+        from datetime import datetime
+        if not date_str:
+            return None
+        try:
+            # try ISO first
+            return datetime.fromisoformat(str(date_str)).date()
+        except Exception:
+            try:
+                return datetime.strptime(str(date_str), '%Y-%m-%d').date()
+            except Exception:
+                try:
+                    return datetime.strptime(str(date_str), '%d-%m-%Y').date()
+                except Exception:
+                    return None
+
+    def generate_report(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
+        """Generate matched reports (GL vs Switch / Switch vs NPCI / GL vs NPCI)
+
+        Produces six CSVs (inward/outward for each pair). Does not change
+        reconciliation logic — uses existing `results` classification.
+        Also writes `recon_output.json` for traceability.
+        """
+        import os
+        import pandas as pd
+        from datetime import datetime
+
+        reports_dir = self._ensure_reports_dir(run_folder)
+
+        # Save raw recon output for audit/consumers
+        try:
+            import json
+            outp = os.path.join(reports_dir, 'recon_output.json')
+            with open(outp, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2, default=str)
+        except Exception:
+            pass
+
+        # Prepare rows for each required report
+        report_rows = {
+            'GL_vs_Switch_Inward': [],
+            'GL_vs_Switch_Outward': [],
+            'Switch_vs_NPCI_Inward': [],
+            'Switch_vs_NPCI_Outward': [],
+            'GL_vs_NPCI_Inward': [],
+            'GL_vs_NPCI_Outward': []
+        }
+
+        # Helper to determine direction (inward/outward) using available fields
+        def infer_direction(rec):
+            # prefer explicit tran_type if it contains keywords
+            for s in ['cbs', 'switch', 'npci']:
+                src = rec.get(s)
+                if src:
+                    tt = str(src.get('tran_type') or '').upper()
+                    if 'INWARD' in tt or 'IN' in tt:
+                        return 'Inward'
+                    if 'OUTWARD' in tt or 'OUT' in tt:
+                        return 'Outward'
+                    drcr = str(src.get('dr_cr') or '').upper()
+                    if drcr.startswith('C'):
+                        return 'Inward'
+                    if drcr.startswith('D'):
+                        return 'Outward'
+            return 'Inward'
+
+        # Iterate over results and populate rows
+        for key, rec in results.items():
+            # skip non-record entries (like hanging_list index)
+            if not isinstance(rec, dict):
+                continue
+            status = rec.get('status')
+            # Matched transactions
+            if status == MATCHED or rec.get('settlement_matched'):
+                # Get normalized values
+                for pair, systems in [('GL_vs_Switch', (CBS, SWITCH)), ('Switch_vs_NPCI', (SWITCH, NPCI)), ('GL_vs_NPCI', (CBS, NPCI))]:
+                    s1, s2 = systems
+                    r1 = rec.get(s1)
+                    r2 = rec.get(s2)
+                    if r1 and r2:
+                        # ensure amount & date match (strict equality as per rules)
+                        try:
+                            amt1 = float(r1.get('amount') or 0)
+                            amt2 = float(r2.get('amount') or 0)
+                        except Exception:
+                            continue
+                        date1 = r1.get('date')
+                        date2 = r2.get('date')
+                        if amt1 == amt2 and str(date1) == str(date2):
+                            direction = infer_direction(rec)
+                            # Build row following required schema
+                            row = {
+                                'run_id': run_id,
+                                'cycle_id': cycle_id or '',
+                                'RRN': key,
+                                'UPI_Transaction_ID': (rec.get('UPI_Tran_ID') or ''),
+                                'Amount': amt1,
+                                'Transaction_Date': self._parse_date(date1).strftime('%Y-%m-%d') if self._parse_date(date1) else (str(date1) if date1 else ''),
+                                'RC': (r1.get('rc') or r2.get('rc') or ''),
+                                'Source_System_1': s1.upper(),
+                                'Source_System_2': s2.upper(),
+                                'Direction': infer_direction(rec),
+                                'Matched_On': 'RRN'
+                            }
+                            report_key = f"{pair}_{direction}"
+                            if report_key in report_rows:
+                                report_rows[report_key].append(row)
+
+        # Write CSVs using reporting utility with strict headers
+        matched_headers = [
+            'run_id','cycle_id','RRN','UPI_Transaction_ID','Amount','Transaction_Date',
+            'RC','Source_System_1','Source_System_2','Direction','Matched_On'
+        ]
+        for name, rows in report_rows.items():
+            try:
+                # ensure list of dicts
+                write_report(run_id, cycle_id, 'reports', f"{name}.csv", matched_headers, rows)
+            except Exception as e:
+                logger.error(f"Failed to write report {name}: {e}")
+
+        # Also generate switch update file (best-effort from results)
+        try:
+            self.generate_switch_update_file(results, reports_dir, run_id=run_id)
+        except Exception:
+            pass
+
+    def generate_unmatched_ageing(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
+        """Generate unmatched inward/outward CSVs with ageing buckets."""
+        import os
+        import pandas as pd
+        from datetime import datetime
+
+        reports_dir = self._ensure_reports_dir(run_folder)
+        generated_at = datetime.now().isoformat()
+        today = datetime.now().date()
+
+        rows_inward = []
+        rows_outward = []
+
+        for key, rec in results.items():
+            if not isinstance(rec, dict):
+                continue
+            status = rec.get('status')
+            if status in [ORPHAN, PARTIAL_MATCH, PARTIAL_MISMATCH, MISMATCH]:
+                # determine present and missing systems
+                present = [s.upper() for s in [CBS, SWITCH, NPCI] if rec.get(s)]
+                missing = [s.upper() for s in [CBS, SWITCH, NPCI] if not rec.get(s)]
+
+                # pick a date from available sources (prefer CBS then switch then npci)
+                date_candidate = None
+                amt_candidate = 0
+                for s in [CBS, SWITCH, NPCI]:
+                    src = rec.get(s)
+                    if src:
+                        date_candidate = src.get('date') or date_candidate
+                        amt_candidate = src.get('amount') or amt_candidate
+
+                parsed = self._parse_date(date_candidate)
+                ageing_days = None
+                if parsed:
+                    ageing_days = (today - parsed).days
+                # bucket
+                if ageing_days is None:
+                    bucket = '>3 days'
+                elif ageing_days <= 1:
+                    bucket = '0-1 days'
+                elif 2 <= ageing_days <= 3:
+                    bucket = '2-3 days'
+                else:
+                    bucket = '>3 days'
+
+                # infer direction
+                direction = 'Inward'
+                # simple inference using available dr_cr
+                for s in [CBS, SWITCH, NPCI]:
+                    src = rec.get(s)
+                    if src:
+                        drcr = str(src.get('dr_cr') or '').upper()
+                        if drcr.startswith('C'):
+                            direction = 'Inward'
+                            break
+                        if drcr.startswith('D'):
+                            direction = 'Outward'
+                            break
+
+                row = {
+                    'run_id': run_id,
+                    'cycle_id': '',
+                    'RRN': key,
+                    'Present_In': '/'.join(present),
+                    'Missing_In': '/'.join(missing),
+                    'Amount': amt_candidate,
+                    'Transaction_Date': self._parse_date(date_candidate).strftime('%Y-%m-%d') if self._parse_date(date_candidate) else (str(date_candidate) if date_candidate else ''),
+                    'Ageing_Days': ageing_days if ageing_days is not None else '',
+                    'Ageing_Bucket': bucket,
+                    'Unmatched_Reason': ','.join(present)
+                }
+
+                if direction == 'Inward':
+                    rows_inward.append(row)
+                else:
+                    rows_outward.append(row)
+
+        # Write CSVs
+        ageing_headers = ['run_id','cycle_id','RRN','Present_In','Missing_In','Amount','Transaction_Date','Ageing_Days','Ageing_Bucket','Unmatched_Reason']
+        try:
+            write_report(run_id, cycle_id, 'reports', 'Unmatched_Inward_Ageing.csv', ageing_headers, rows_inward)
+        except Exception:
+            write_report(run_id, cycle_id, 'reports', 'Unmatched_Inward_Ageing.csv', ageing_headers, [])
+        try:
+            write_report(run_id, cycle_id, 'reports', 'Unmatched_Outward_Ageing.csv', ageing_headers, rows_outward)
+        except Exception:
+            write_report(run_id, cycle_id, 'reports', 'Unmatched_Outward_Ageing.csv', ageing_headers, [])
+
+    def generate_hanging_reports(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
+        """Generate Hanging Transactions reports (Inward / Outward)."""
+        import os
+        import pandas as pd
+        from datetime import datetime
+
+        reports_dir = self._ensure_reports_dir(run_folder)
+        generated_at = datetime.now().isoformat()
+
+        rows_in = []
+        rows_out = []
+
+        for key, rec in results.items():
+            if not isinstance(rec, dict):
+                continue
+            if rec.get('status') == HANGING:
+                # pick source info
+                present = [s.upper() for s in [CBS, SWITCH, NPCI] if rec.get(s)]
+                missing = [s.upper() for s in [CBS, SWITCH, NPCI] if not rec.get(s)]
+                # amount/date
+                amt = ''
+                date = ''
+                for s in [CBS, SWITCH, NPCI]:
+                    src = rec.get(s)
+                    if src:
+                        amt = src.get('amount') or amt
+                        date = src.get('date') or date
+
+                reason = rec.get('hanging_reason') or ''
+
+                # infer direction
+                direction = 'Inward'
+                for s in [CBS, SWITCH, NPCI]:
+                    src = rec.get(s)
+                    if src:
+                        drcr = str(src.get('dr_cr') or '').upper()
+                        if drcr.startswith('D'):
+                            direction = 'Outward'
+                            break
+                        if drcr.startswith('C'):
+                            direction = 'Inward'
+                            break
+
+                row = {
+                    'run_id': run_id,
+                    'cycle_id': '',
+                    'RRN': key,
+                    'Amount': amt,
+                    'Transaction_Date': self._parse_date(date).strftime('%Y-%m-%d') if self._parse_date(date) else (str(date) if date else ''),
+                    'Expected_Next_Cycle': '',
+                    'Reason': reason
+                }
+
+                if direction == 'Inward':
+                    rows_in.append(row)
+                else:
+                    rows_out.append(row)
+
+        # Write CSVs
+        hanging_headers = ['run_id','cycle_id','RRN','Amount','Transaction_Date','Expected_Next_Cycle','Reason']
+        try:
+            write_report(run_id, cycle_id, 'reports', 'Hanging_Inward.csv', hanging_headers, rows_in)
+        except Exception:
+            write_report(run_id, cycle_id, 'reports', 'Hanging_Inward.csv', hanging_headers, [])
+        try:
+            write_report(run_id, cycle_id, 'reports', 'Hanging_Outward.csv', hanging_headers, rows_out)
+        except Exception:
+            write_report(run_id, cycle_id, 'reports', 'Hanging_Outward.csv', hanging_headers, [])
+
+    def generate_adjustments_csv(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
+        """Generate ANNEXURE-IV style adjustments CSV using annexure_iv helper.
+
+        This collects candidate adjustment records from reconciliation results
+        (TCC/RET/DRC/RRC/REFUND/RECOVERY candidates) and writes an Annexure file
+        named ANNEXURE_IV_<run_id>.csv under reports/.
+        """
+        try:
+            reports_dir = self._ensure_reports_dir(run_folder)
+            annex_recs = []
+            from datetime import datetime
+
+            for key, rec in results.items():
+                if not isinstance(rec, dict):
+                    continue
+                # candidate conditions: tcc present or needs_ttum or status in certain set
+                if rec.get('tcc') or rec.get('needs_ttum') or rec.get('status') in [MISMATCH, PARTIAL_MISMATCH, ORPHAN]:
+                    # pick best source
+                    src = None
+                    for s in [CBS, SWITCH, NPCI]:
+                        if rec.get(s):
+                            src = rec.get(s)
+                            break
+                    amt = src.get('amount') if src else ''
+                    date = src.get('date') if src else ''
+                    # Normalize date to YYYY-MM-DD when possible
+                    try:
+                        if date:
+                            dnorm = datetime.fromisoformat(str(date)).strftime('%Y-%m-%d')
+                        else:
+                            dnorm = ''
+                    except Exception:
+                        try:
+                            from datetime import datetime as _dt
+                            dnorm = _dt.strptime(str(date), '%Y-%m-%d').strftime('%Y-%m-%d')
+                        except Exception:
+                            dnorm = ''
+
+                    flag = 'DRC'
+                    if rec.get('tcc'):
+                        flag = 'TCC'
+                    elif rec.get('needs_ttum'):
+                        flag = 'RET'
+
+                    annex_recs.append({
+                        'Bankadjref': f"BR_{key}_{int(datetime.now().timestamp())}",
+                        'Flag': flag,
+                        'shtdat': dnorm,
+                        'adjsmt': amt,
+                        'Shser': str(key),
+                        'Shcrd': f"NBIN{key}",
+                        'FileName': f"ANNEXURE_{run_id}.csv",
+                        'reason': (rec.get('cbs') or {}).get('rc','') or (rec.get('npci') or {}).get('rc',''),
+                        'specifyother': rec.get('tcc') or ''
+                    })
+
+            if annex_recs:
+                try:
+                    from annexure_iv import generate_annexure_iv_csv
+                    # write using run_id and cycle scoping
+                    generate_annexure_iv_csv(annex_recs, run_id=run_id, cycle_id=cycle_id)
+                except Exception as e:
+                    logger.error(f"Failed to write ANNEXURE_IV: {e}")
+        except Exception:
+            pass
+
+    def generate_switch_update_file(self, results: Dict, run_folder: str, run_id: str = None):
+        """Generate a best-effort switch update file containing old/new statuses.
+
+        Old Status is taken from any source RC present; New Status is the
+        reconciliation `status`. This file is informational and intended for
+        downstream operational ingestion — do not assume any automatic action.
+        """
+        import os
+        import pandas as pd
+        from datetime import datetime
+
+        reports_dir = self._ensure_reports_dir(run_folder)
+        generated_at = datetime.now().isoformat()
+        rows = []
+
+        for key, rec in results.items():
+            if not isinstance(rec, dict):
+                continue
+            # collect old status from available source RC fields
+            old_status = ''
+            for s in [NPCI, SWITCH, CBS]:
+                src = rec.get(s)
+                if src and src.get('rc'):
+                    old_status = src.get('rc')
+                    break
+
+            new_status = rec.get('status') or ''
+            if not old_status and not new_status:
+                continue
+
+            rows.append({
+                'run_id': run_id,
+                'generated_at': generated_at,
+                'RRN': key,
+                'Old_Status': old_status,
+                'New_Status': new_status,
+                'Reason': rec.get('tcc') or rec.get('hanging_reason') or '',
+                'Date': (rec.get('cbs') or rec.get('switch') or rec.get('npci') or {}).get('date',''),
+                'Source_Systems': ','.join([s.upper() for s in [CBS, SWITCH, NPCI] if rec.get(s)])
+            })
+
+        try:
+            df = pd.DataFrame(rows)
+            if df.empty:
+                df = pd.DataFrame(columns=['run_id','generated_at','RRN','Old_Status','New_Status','Reason','Date','Source_Systems'])
+            df.to_csv(os.path.join(reports_dir, 'Switch_Update_File.csv'), index=False, encoding='utf-8')
+        except Exception as e:
+            logger.error(f"Failed to write Switch update file: {e}")
+
         # Populate unmatched_records as combination of partial_match_records and orphan_records
         self.unmatched_records = self.partial_match_records + self.orphan_records
 
@@ -462,7 +871,7 @@ class ReconciliationEngine:
         logger.info(f"Generated summary.json at {output_path}")
         return output_path
 
-    def generate_report(self, results: Dict, run_folder: str, run_id: str = None) -> str:
+    def generate_human_report(self, results: Dict, run_folder: str, run_id: str = None) -> str:
         """Generate human-readable report.txt and summary.json"""
         # Also generate the JSON summary
         self.generate_summary_json(results, run_folder)
@@ -776,27 +1185,82 @@ DETAILED ANALYSIS:
         return path
     
     def generate_adjustments_csv(self, results: Dict, run_folder: str) -> str:
-        """Generate adjustments.csv for Force Match UI"""
+        """Generate adjustments.csv for Force Match UI - handles both legacy and UPI format"""
         adjustments_data = []
         
-        for rrn, record in results.items():
-            row = {
-                RRN: rrn,
-                'Status': record['status'],
-                f'{CBS.upper()}_Amount': record[CBS]['amount'] if record[CBS] else '',
-                f'{SWITCH.upper()}_Amount': record[SWITCH]['amount'] if record[SWITCH] else '',
-                f'{NPCI.upper()}_Amount': record[NPCI]['amount'] if record[NPCI] else '',
-                f'{CBS.upper()}_Date': record[CBS]['date'] if record[CBS] else '',
-                f'{SWITCH.upper()}_Date': record[SWITCH]['date'] if record[SWITCH] else '',
-                f'{NPCI.upper()}_Date': record[NPCI]['date'] if record[NPCI] else '',
-                f'{CBS.upper()}_Source': 'X' if record[CBS] else '',
-                f'{SWITCH.upper()}_Source': 'X' if record[SWITCH] else '',
-                f'{NPCI.upper()}_Source': 'X' if record[NPCI] else '',
-                'Suggested_Action': self._get_suggested_action(record)
-            }
-            adjustments_data.append(row)
+        # Check if this is UPI engine output (has 'summary' and 'details' keys)
+        if 'summary' in results and 'details' in results:
+            # UPI engine format - extract exceptions and TTUM candidates
+            exceptions = results.get('exceptions', [])
+            ttum_candidates = results.get('ttum_candidates', [])
+            
+            # Process exceptions
+            for exc in exceptions:
+                row = {
+                    RRN: exc.get('rrn', ''),
+                    'Status': 'EXCEPTION',
+                    f'{CBS.upper()}_Amount': exc.get('amount', '') if exc.get('source') == 'CBS' else '',
+                    f'{SWITCH.upper()}_Amount': exc.get('amount', '') if exc.get('source') == 'SWITCH' else '',
+                    f'{NPCI.upper()}_Amount': exc.get('amount', '') if exc.get('source') == 'NPCI' else '',
+                    f'{CBS.upper()}_Date': '',
+                    f'{SWITCH.upper()}_Date': '',
+                    f'{NPCI.upper()}_Date': '',
+                    f'{CBS.upper()}_Source': 'X' if exc.get('source') == 'CBS' else '',
+                    f'{SWITCH.upper()}_Source': 'X' if exc.get('source') == 'SWITCH' else '',
+                    f'{NPCI.upper()}_Source': 'X' if exc.get('source') == 'NPCI' else '',
+                    'Exception_Type': exc.get('exception_type', ''),
+                    'TTUM_Required': 'Yes' if exc.get('ttum_required') else 'No',
+                    'Suggested_Action': f"Generate {exc.get('ttum_type', 'MANUAL')} TTUM"
+                }
+                adjustments_data.append(row)
+            
+            # Process TTUM candidates
+            for ttum in ttum_candidates:
+                row = {
+                    RRN: ttum.get('rrn', ''),
+                    'Status': 'TTUM_REQUIRED',
+                    f'{CBS.upper()}_Amount': ttum.get('amount', '') if ttum.get('source') == 'CBS' else '',
+                    f'{SWITCH.upper()}_Amount': '',
+                    f'{NPCI.upper()}_Amount': ttum.get('amount', '') if ttum.get('source') == 'NPCI' else '',
+                    f'{CBS.upper()}_Date': '',
+                    f'{SWITCH.upper()}_Date': '',
+                    f'{NPCI.upper()}_Date': '',
+                    f'{CBS.upper()}_Source': 'X' if ttum.get('source') == 'CBS' else '',
+                    f'{SWITCH.upper()}_Source': '',
+                    f'{NPCI.upper()}_Source': 'X' if ttum.get('source') == 'NPCI' else '',
+                    'TTUM_Type': ttum.get('ttum_type', ''),
+                    'Direction': ttum.get('direction', ''),
+                    'Suggested_Action': f"Generate {ttum.get('ttum_type', 'UNKNOWN')} TTUM"
+                }
+                adjustments_data.append(row)
+        else:
+            # Legacy format - RRN keyed records
+            for rrn, record in results.items():
+                if not isinstance(record, dict):
+                    continue
+                row = {
+                    RRN: rrn,
+                    'Status': record.get('status', 'UNKNOWN'),
+                    f'{CBS.upper()}_Amount': record.get(CBS, {}).get('amount', '') if isinstance(record.get(CBS), dict) else '',
+                    f'{SWITCH.upper()}_Amount': record.get(SWITCH, {}).get('amount', '') if isinstance(record.get(SWITCH), dict) else '',
+                    f'{NPCI.upper()}_Amount': record.get(NPCI, {}).get('amount', '') if isinstance(record.get(NPCI), dict) else '',
+                    f'{CBS.upper()}_Date': record.get(CBS, {}).get('date', '') if isinstance(record.get(CBS), dict) else '',
+                    f'{SWITCH.upper()}_Date': record.get(SWITCH, {}).get('date', '') if isinstance(record.get(SWITCH), dict) else '',
+                    f'{NPCI.upper()}_Date': record.get(NPCI, {}).get('date', '') if isinstance(record.get(NPCI), dict) else '',
+                    f'{CBS.upper()}_Source': 'X' if record.get(CBS) else '',
+                    f'{SWITCH.upper()}_Source': 'X' if record.get(SWITCH) else '',
+                    f'{NPCI.upper()}_Source': 'X' if record.get(NPCI) else '',
+                    'Suggested_Action': self._get_suggested_action(record)
+                }
+                adjustments_data.append(row)
         
-        df = pd.DataFrame(adjustments_data)
+        if adjustments_data:
+            df = pd.DataFrame(adjustments_data)
+        else:
+            # Create empty dataframe with expected columns
+            df = pd.DataFrame(columns=[RRN, 'Status', f'{CBS.upper()}_Amount', f'{SWITCH.upper()}_Amount', 
+                                      f'{NPCI.upper()}_Amount', 'Suggested_Action'])
+        
         csv_path = os.path.join(run_folder, "adjustments.csv")
         df.to_csv(csv_path, index=False)
         

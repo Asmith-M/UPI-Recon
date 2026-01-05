@@ -543,20 +543,26 @@ class UPIReconciliationEngine:
         return df['match_status'].value_counts().to_dict()
 
     def _get_exception_summary(self) -> Dict:
-        """Get summary of exceptions found"""
+        """Get summary of exceptions found with full transaction details"""
         all_exceptions = []
 
         for df, source in [(self.cbs_df, 'CBS'), (self.switch_df, 'SWITCH'), (self.npci_df, 'NPCI')]:
             exceptions = df[df['exception_type'].notna()]
             for _, row in exceptions.iterrows():
-                all_exceptions.append({
+                exc_record = {
                     'source': source,
                     'rrn': row.get('RRN'),
-                    'amount': row.get('Amount'),
+                    'amount': float(row.get('Amount', 0)) if pd.notna(row.get('Amount')) else 0,
+                    'date': str(row.get('Date', '')) if pd.notna(row.get('Date')) else '',
+                    'time': str(row.get('Time', '')) if pd.notna(row.get('Time')) else '',
+                    'reference': str(row.get('Reference_ID', '')) if pd.notna(row.get('Reference_ID')) else '',
+                    'description': str(row.get('Description', '')) if pd.notna(row.get('Description')) else '',
+                    'debit_credit': str(row.get('Debit_Credit', '')) if pd.notna(row.get('Debit_Credit')) else '',
                     'exception_type': row.get('exception_type'),
                     'ttum_required': row.get('ttum_required', False),
                     'ttum_type': row.get('ttum_type')
-                })
+                }
+                all_exceptions.append(exc_record)
 
         return all_exceptions
 

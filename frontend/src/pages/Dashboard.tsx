@@ -25,10 +25,10 @@ import { apiClient } from "../lib/api";
 
 // Use theme colors for charts
 const CHART_COLORS = {
-  matched: "hsl(142, 76%, 36%)",
-  unmatched: "hsl(0, 84%, 60%)",
-  brandBlue: "hsl(var(--brand-blue))",
-  brandSky: "hsl(var(--brand-sky))",
+  matched: "hsl(var(--secondary))",
+  unmatched: "hsl(var(--destructive))",
+  brandBlue: "hsl(var(--primary))",
+  brandSky: "hsl(var(--secondary))",
 };
 
 export default function Dashboard() {
@@ -123,7 +123,7 @@ export default function Dashboard() {
               <span>No reconciliation data available yet. Please upload files and run reconciliation to see dashboard data.</span>
             </div>
             <Button 
-              className="mt-4 bg-brand-blue hover:bg-brand-mid"
+              className="mt-4 bg-primary hover:bg-secondary"
               onClick={() => window.location.href = '/file-upload'}
             >
               Go to File Upload
@@ -168,10 +168,10 @@ export default function Dashboard() {
       {/* Tabs */}
       <Tabs defaultValue="recon" className="w-full">
         <TabsList className="bg-muted/30">
-          <TabsTrigger value="recon" className="data-[state=active]:bg-brand-blue data-[state=active]:text-primary-foreground">
+          <TabsTrigger value="recon" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
             Recon Dashboard
           </TabsTrigger>
-          <TabsTrigger value="breaks" className="data-[state=active]:bg-brand-blue data-[state=active]:text-primary-foreground">
+          <TabsTrigger value="breaks" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
             Today's Breaks
           </TabsTrigger>
         </TabsList>

@@ -13,6 +13,7 @@ from logging_config import get_logger
 
 logger = get_logger(__name__)
 from annexure_iv import generate_annexure_iv_csv
+from reporting import write_report
 
 
 class VoucherType(Enum):
@@ -521,6 +522,25 @@ class SettlementEngine:
         ttum_dir = os.path.join(run_folder, 'ttum')
         os.makedirs(ttum_dir, exist_ok=True)
 
+        # attempt to infer run_id and cycle_id from the provided run_folder path
+        run_id = None
+        cycle_id = None
+        try:
+            # walk up components to find a folder starting with 'RUN_'
+            parts = os.path.normpath(run_folder).split(os.path.sep)
+            for p in parts[::-1]:
+                if p.startswith('RUN_'):
+                    run_id = p
+                    break
+            # find any 'cycle_<id>' component
+            for p in parts:
+                if p.startswith('cycle_'):
+                    cycle_id = p.split('cycle_', 1)[1]
+                    break
+        except Exception:
+            run_id = None
+            cycle_id = None
+
         categories = ['DRC', 'RRC', 'TCC', 'RET', 'RECOVERY', 'REFUND']
         created = {}
         annexure_records = []
@@ -543,16 +563,14 @@ class SettlementEngine:
             return {}
 
         for cat in categories:
-            path = os.path.join(ttum_dir, f"{cat.lower()}.csv")
-            with open(path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                # Closer Annexure-IV header + accounting mapping fields
-                writer.writerow([
-                    'InstructionType', 'InstructionRefNo', 'RRN', 'Amount', 'ValueDate', 'DrCr', 'RC', 'Tran_Type',
-                    'AccountNo', 'IFSC', 'Narration', 'TTUM_Code', 'GL_Debit_Account', 'GL_Credit_Account'
-                ])
+            # If we have a canonical run_id, prefer writing TTUMs via centralized reporting.write_report
+            headers = [
+                'InstructionType', 'InstructionRefNo', 'RRN', 'Amount', 'ValueDate', 'DrCr', 'RC', 'Tran_Type',
+                'AccountNo', 'IFSC', 'Narration', 'TTUM_Code', 'GL_Debit_Account', 'GL_Credit_Account'
+            ]
 
-                for rrn, rec in recon_results.items():
+            rows_for_cat = []
+            for rrn, rec in recon_results.items():
                     if not isinstance(rec, dict):
                         continue
                     status = rec.get('status')
@@ -645,7 +663,8 @@ class SettlementEngine:
 
                     # TCC generation: NPCI RC startswith RB
                     if cat == 'TCC' and rc and str(rc).upper().startswith('RB'):
-                        writer.writerow([instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, 'TCC', gl_debit, gl_credit])
+                        row = [instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, 'TCC', gl_debit, gl_credit]
+                        rows_for_cat.append(dict(zip(headers, row)))
                         # collect annexure row
                         try:
                             annex_flag = flag_map.get(cat, 'TCC')
@@ -672,7 +691,8 @@ class SettlementEngine:
 
                     # DRC/RRC for settlement differences (use PARTIAL_MATCH/ORPHAN/MISMATCH)
                     if cat in ['DRC', 'RRC'] and status in ['PARTIAL_MATCH', 'ORPHAN', 'MISMATCH']:
-                        writer.writerow([instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, cat, gl_debit, gl_credit])
+                        row = [instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, cat, gl_debit, gl_credit]
+                        rows_for_cat.append(dict(zip(headers, row)))
                         # collect annexure row
                         try:
                             annex_flag = flag_map.get(cat, cat)
@@ -705,7 +725,8 @@ class SettlementEngine:
                             if any(x in act for x in ['ignore', 'no action', 'hanging', 'hang', 'matched', 'both leg present']):
                                 skip_for_action = True
                         if not skip_for_action:
-                            writer.writerow([instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, cat, gl_debit, gl_credit])
+                            row = [instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, cat, gl_debit, gl_credit]
+                            rows_for_cat.append(dict(zip(headers, row)))
                             # collect annexure row (map REFUND->CR)
                             try:
                                 annex_flag = flag_map.get(cat, 'CR')
@@ -731,7 +752,8 @@ class SettlementEngine:
 
                     # RET (returns) - NPCI failed but CBS success
                     if cat == 'RET' and (rec.get('needs_ttum') or rec.get('status') == 'EXCEPTION'):
-                        writer.writerow([instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', f'RET for {rrn}', 'RET', gl_debit, gl_credit])
+                        row = [instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', f'RET for {rrn}', 'RET', gl_debit, gl_credit]
+                        rows_for_cat.append(dict(zip(headers, row)))
                         try:
                             annex_flag = flag_map.get(cat, 'RET')
                             shtdat = ''
@@ -754,7 +776,28 @@ class SettlementEngine:
                         except Exception:
                             pass
 
-            created[cat] = path
+            # If we inferred a run_id, write via reporting utility (centralized output path), otherwise fallback to legacy file under run_folder
+            if run_id:
+                try:
+                    outp = write_report(run_id, cycle_id, 'ttum', f"{cat.lower()}.csv", headers, rows_for_cat)
+                    created[cat] = outp
+                except Exception:
+                    # fallback: write directly into ttum_dir
+                    path = os.path.join(ttum_dir, f"{cat.lower()}.csv")
+                    with open(path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(headers)
+                        for r in rows_for_cat:
+                            writer.writerow([r.get(h, '') for h in headers])
+                    created[cat] = path
+            else:
+                path = os.path.join(ttum_dir, f"{cat.lower()}.csv")
+                with open(path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(headers)
+                    for r in rows_for_cat:
+                        writer.writerow([r.get(h, '') for h in headers])
+                created[cat] = path
 
         # write index file
         try:
@@ -767,10 +810,52 @@ class SettlementEngine:
         # Generate Annexure-IV CSV if we collected any records
         try:
             if annexure_records:
+                # Normalize annexure records to ensure mandatory fields (shtdat, adjsmt)
+                norm_recs = []
+                for rec in annexure_records:
+                    r = rec.copy()
+                    # ensure shtdat exists and is YYYY-MM-DD; fallback to today
+                    try:
+                        if not r.get('shtdat'):
+                            r['shtdat'] = datetime.now().strftime('%Y-%m-%d')
+                        else:
+                            try:
+                                r['shtdat'] = datetime.fromisoformat(str(r['shtdat'])).strftime('%Y-%m-%d')
+                            except Exception:
+                                try:
+                                    r['shtdat'] = datetime.strptime(str(r['shtdat']), '%Y-%m-%d').strftime('%Y-%m-%d')
+                                except Exception:
+                                    r['shtdat'] = datetime.now().strftime('%Y-%m-%d')
+                    except Exception:
+                        r['shtdat'] = datetime.now().strftime('%Y-%m-%d')
+
+                    # ensure adjsmt formatted to two decimals
+                    try:
+                        if r.get('adjsmt') is None or str(r.get('adjsmt')).strip() == '':
+                            r['adjsmt'] = '0.00'
+                        else:
+                            r['adjsmt'] = format(float(r['adjsmt']), '.2f')
+                    except Exception:
+                        r['adjsmt'] = '0.00'
+
+                    # ensure required string fields
+                    r['Bankadjref'] = str(r.get('Bankadjref') or f"BR_{int(datetime.now().timestamp())}")
+                    r['Shser'] = str(r.get('Shser') or '')
+                    r['Shcrd'] = str(r.get('Shcrd') or '')
+                    r['FileName'] = str(r.get('FileName') or os.path.basename(ttum_dir))
+                    # NPCI reason must be max 5 chars per Annexure-IV; truncate if longer
+                    r['reason'] = str(r.get('reason') or '')[:5]
+                    r['specifyother'] = str(r.get('specifyother') or '')
+
+                    norm_recs.append(r)
+
                 try:
-                    from annexure_iv import generate_annexure_iv_csv
-                    annex_path = os.path.join(ttum_dir, 'annexure_iv.csv')
-                    generate_annexure_iv_csv(annexure_records, annex_path)
+                    # Prefer to write Annexure via standardized reporting if we have run_id
+                    if run_id:
+                        annex_path = generate_annexure_iv_csv(norm_recs, run_id=run_id, cycle_id=cycle_id)
+                    else:
+                        annex_path = os.path.join(ttum_dir, 'annexure_iv.csv')
+                        generate_annexure_iv_csv(norm_recs, annex_path)
                     created['ANNEXURE_IV'] = annex_path
                 except Exception as e:
                     logger.error(f"Failed to generate Annexure-IV CSV: {e}")

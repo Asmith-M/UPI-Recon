@@ -267,8 +267,52 @@ async def get_summary(user: dict = Depends(get_current_user)):
                 "run_id": None
             }
         latest = sorted(runs)[-1]
+        
+        # First try OUTPUT_DIR for UPI reconciliation results (recon_output.json)
+        output_path = os.path.join(OUTPUT_DIR, latest, 'recon_output.json')
+        if os.path.exists(output_path):
+            with open(output_path, 'r') as f:
+                recon_data = json.load(f)
+            
+            # Transform UPI recon output to summary format
+            summary_data = recon_data.get('summary', {})
+            return {
+                "run_id": latest,
+                "status": "completed",
+                "totals": {
+                    "count": summary_data.get('total_cbs', 0) + summary_data.get('total_switch', 0) + summary_data.get('total_npci', 0),
+                    "amount": 0
+                },
+                "matched": {
+                    "count": summary_data.get('matched_cbs', 0) + summary_data.get('matched_switch', 0) + summary_data.get('matched_npci', 0),
+                    "amount": 0
+                },
+                "unmatched": {
+                    "count": len(recon_data.get('exceptions', [])),
+                    "amount": 0
+                },
+                "breakdown": {
+                    "cbs": {
+                        "total": summary_data.get('total_cbs', 0),
+                        "matched": summary_data.get('matched_cbs', 0),
+                        "unmatched": summary_data.get('unmatched_cbs', 0)
+                    },
+                    "switch": {
+                        "total": summary_data.get('total_switch', 0),
+                        "matched": summary_data.get('matched_switch', 0),
+                        "unmatched": summary_data.get('unmatched_switch', 0)
+                    },
+                    "npci": {
+                        "total": summary_data.get('total_npci', 0),
+                        "matched": summary_data.get('matched_npci', 0),
+                        "unmatched": summary_data.get('unmatched_npci', 0)
+                    }
+                },
+                "ttum_required": summary_data.get('ttum_required', 0)
+            }
+        
+        # Fallback to UPLOAD_DIR for legacy summary.json
         run_root = os.path.join(UPLOAD_DIR, latest)
-
         summary_path = None
         for root_dir, dirs, files in os.walk(run_root):
             if 'summary.json' in files:
@@ -284,7 +328,7 @@ async def get_summary(user: dict = Depends(get_current_user)):
                 "matched": 0,
                 "unmatched": 0,
                 "adjustments": 0,
-                "status": "no_data",
+                "status": "no_reconciliation_run",
                 "run_id": latest
             }
     except Exception as e:
@@ -438,6 +482,54 @@ async def upload_files(
         logger.error(f"File upload error: {str(e)}")
         raise HTTPException(status_code=500, detail="File upload process failed")
 
+def _detect_upi_reconciliation(dataframes: List[pd.DataFrame]) -> bool:
+    """Detect if this is a UPI reconciliation run based on file content"""
+    upi_indicators = ['UPI_Tran_ID', 'Payer_PSP', 'Payee_PSP', 'Originating_Channel']
+
+    for df in dataframes:
+        if any(col in df.columns for col in upi_indicators):
+            return True
+
+        # Check for UPI-specific values in Tran_Type
+        if 'Tran_Type' in df.columns:
+            tran_types = df['Tran_Type'].astype(str).str.strip().str.upper()
+            if any(tt in ['U2', 'U3'] for tt in tran_types.unique()):
+                return True
+
+    return False
+
+
+def _extract_upi_dataframes(dataframes: List[pd.DataFrame]) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Extract CBS, Switch, and NPCI dataframes for UPI reconciliation"""
+    cbs_df = pd.DataFrame()
+    switch_df = pd.DataFrame()
+    npci_df = pd.DataFrame()
+
+    for df in dataframes:
+        # Get source column - handle both Series and string values
+        source = ''
+        if 'Source' in df.columns:
+            source_val = df['Source'].iloc[0] if len(df) > 0 else ''
+            source = str(source_val).upper() if source_val else ''
+        
+        if source == 'CBS':
+            cbs_df = pd.concat([cbs_df, df], ignore_index=True)
+        elif source == 'SWITCH':
+            switch_df = pd.concat([switch_df, df], ignore_index=True)
+        elif source == 'NPCI':
+            npci_df = pd.concat([npci_df, df], ignore_index=True)
+        else:
+            # Fallback: place into first empty slot based on order
+            if cbs_df.empty:
+                cbs_df = df.copy()
+            elif switch_df.empty:
+                switch_df = df.copy()
+            elif npci_df.empty:
+                npci_df = df.copy()
+
+    return cbs_df, switch_df, npci_df
+
+
 @app.post("/api/v1/recon/run")
 async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(get_current_user), _rl=Depends(rate_limiter)):
     """Runs the reconciliation process for a given run_id or latest if not provided."""
@@ -488,28 +580,41 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
             # Extract UPI-specific dataframes
             cbs_df, switch_df, npci_df = _extract_upi_dataframes(dataframes)
             results = upi_recon_engine.perform_upi_reconciliation(cbs_df, switch_df, npci_df, run_id)
+            
+            # UPI engine outputs structured data - save it to OUTPUT_DIR
+            try:
+                import json
+                output_run_dir = os.path.join(OUTPUT_DIR, run_id)
+                os.makedirs(output_run_dir, exist_ok=True)
+                recon_output_path = os.path.join(output_run_dir, "recon_output.json")
+                with open(recon_output_path, 'w', encoding='utf-8') as f:
+                    json.dump(results, f, indent=2, default=str)
+                logger.info(f"UPI reconciliation results saved to {recon_output_path}")
+            except Exception as e:
+                logger.error(f"Failed to save UPI results: {e}")
         else:
             logger.info(f"Using standard reconciliation engine for {run_id}")
             results = recon_engine.reconcile(dataframes)
+            
+            # Generate reports for legacy format
+            recon_engine.generate_report(results, run_folder, run_id=run_id)
+            recon_engine.generate_adjustments_csv(results, run_folder)
+            recon_engine.generate_unmatched_ageing(results, run_folder)
 
-        # Generate reports
-        recon_engine.generate_report(results, run_folder, run_id=run_id)
-        recon_engine.generate_adjustments_csv(results, run_folder)
-        recon_engine.generate_unmatched_ageing(results, run_folder)
-
-        # Generate TTUMs and GL statements
-        try:
-            recon_engine.settlement_engine.generate_vouchers_from_recon(results, run_id)
-            # generate TTUM CSVs
-            ttum_info = recon_engine.settlement_engine.generate_ttum_files(results, run_folder)
-            # generate GL statement CSV
-            gl_path = recon_engine.settlement_engine.generate_gl_statement(run_id, run_folder)
-        except Exception:
-            ttum_info = {}
-            gl_path = ''
+        # Generate TTUMs and GL statements (only for legacy format for now)
+        if not is_upi_run:
+            try:
+                recon_engine.settlement_engine.generate_vouchers_from_recon(results, run_id)
+                # generate TTUM CSVs
+                ttum_info = recon_engine.settlement_engine.generate_ttum_files(results, run_folder)
+                # generate GL statement CSV
+                gl_path = recon_engine.settlement_engine.generate_gl_statement(run_id, run_folder)
+            except Exception:
+                ttum_info = {}
+                gl_path = ''
 
         # Audit
-        audit.log_reconciliation_event(run_id, 'completed', user_id='system', matched_count=len(recon_engine.matched_records), unmatched_count=len(recon_engine.unmatched_records))
+        audit.log_reconciliation_event(run_id, 'completed', user_id='system', matched_count=0, unmatched_count=0)
         # Log generated TTUM files
         try:
             for k, p in ttum_info.items():
@@ -520,56 +625,68 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
         
         logger.info(f"Reconciliation completed for {run_id}")
 
-        return {"run_id": run_id, "message": "Reconciliation complete and reports generated."}
+        # Prepare detailed summary response
+        summary_response = {
+            "run_id": run_id, 
+            "message": "Reconciliation complete and reports generated.",
+            "status": "completed"
+        }
+        
+        # Add UPI-specific details if available
+        if is_upi_run:
+            output_path = os.path.join(OUTPUT_DIR, run_id, 'recon_output.json')
+            if os.path.exists(output_path):
+                try:
+                    with open(output_path, 'r') as f:
+                        results = json.load(f)
+                    
+                    # Extract comprehensive summary
+                    summary = results.get('summary', {})
+                    exceptions = results.get('exceptions', [])
+                    ttum_candidates = results.get('ttum_candidates', [])
+                    
+                    summary_response["details"] = summary
+                    summary_response["unmatched_count"] = len(exceptions)
+                    summary_response["matched_count"] = summary.get('matched_cbs', 0) + summary.get('matched_switch', 0) + summary.get('matched_npci', 0)
+                    summary_response["ttum_required_count"] = summary.get('ttum_required', 0)
+                    summary_response["ttum_candidates_count"] = len(ttum_candidates)
+                    
+                    # Add breakdown by source
+                    summary_response["breakdown"] = {
+                        "cbs": {
+                            "total": summary.get('total_cbs', 0),
+                            "matched": summary.get('matched_cbs', 0),
+                            "unmatched": summary.get('unmatched_cbs', 0)
+                        },
+                        "switch": {
+                            "total": summary.get('total_switch', 0),
+                            "matched": summary.get('matched_switch', 0),
+                            "unmatched": summary.get('unmatched_switch', 0)
+                        },
+                        "npci": {
+                            "total": summary.get('total_npci', 0),
+                            "matched": summary.get('matched_npci', 0),
+                            "unmatched": summary.get('unmatched_npci', 0)
+                        }
+                    }
+                    
+                    # Add exception types summary
+                    exception_types = {}
+                    for exc in exceptions:
+                        exc_type = exc.get('exception_type', 'UNKNOWN')
+                        exception_types[exc_type] = exception_types.get(exc_type, 0) + 1
+                    summary_response["exception_types"] = exception_types
+                    
+                except Exception as e:
+                    logger.warning(f"Could not extract details from results: {e}")
+        
+        return summary_response
 
     except Exception as e:
         logger.exception(f"Reconciliation run error for {run_request.run_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Reconciliation process failed")
 
-    def _detect_upi_reconciliation(self, dataframes: List[pd.DataFrame]) -> bool:
-        """Detect if this is a UPI reconciliation run based on file content"""
-        upi_indicators = ['UPI_Tran_ID', 'Payer_PSP', 'Payee_PSP', 'Originating_Channel']
 
-        for df in dataframes:
-            if any(col in df.columns for col in upi_indicators):
-                return True
-
-            # Check for UPI-specific values in Tran_Type
-            if 'Tran_Type' in df.columns:
-                tran_types = df['Tran_Type'].astype(str).str.strip().str.upper()
-                if any(tt in ['U2', 'U3'] for tt in tran_types.unique()):
-                    return True
-
-        return False
-
-    def _extract_upi_dataframes(self, dataframes: List[pd.DataFrame]) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Extract CBS, Switch, and NPCI dataframes for UPI reconciliation"""
-        cbs_df = pd.DataFrame()
-        switch_df = pd.DataFrame()
-        npci_df = pd.DataFrame()
-
-        for df in dataframes:
-            source = df.get('Source', '').upper() if 'Source' in df.columns else ''
-
-            if source == 'CBS':
-                cbs_df = pd.concat([cbs_df, df], ignore_index=True)
-            elif source == 'SWITCH':
-                switch_df = pd.concat([switch_df, df], ignore_index=True)
-            elif source == 'NPCI':
-                npci_df = pd.concat([npci_df, df], ignore_index=True)
-            else:
-                # Fallback: check filename patterns in the dataframe
-                # This is a simplified approach - in production you'd track filenames
-                if len(dataframes) >= 3:
-                    # Assume order: CBS, Switch, NPCI
-                    if cbs_df.empty:
-                        cbs_df = df.copy()
-                    elif switch_df.empty:
-                        switch_df = df.copy()
-                    elif npci_df.empty:
-                        npci_df = df.copy()
-
-        return cbs_df, switch_df, npci_df
 
 @app.get("/api/v1/recon/latest/summary")
 async def get_latest_summary(user: dict = Depends(get_current_user)):
@@ -613,12 +730,53 @@ async def get_historical_summary():
         historical_summaries = []
         # Note: This uses UPLOAD_DIR which might differ from file_handler.base_upload_dir
         for run_id in os.listdir(UPLOAD_DIR):
+            if not run_id.startswith('RUN_'):
+                continue
             run_folder = os.path.join(UPLOAD_DIR, run_id)
-            report_path = os.path.join(run_folder, "report.txt")
-            if os.path.exists(report_path):
-                with open(report_path, 'r') as f:
-                    summary = f.read()
-                historical_summaries.append({"run_id": run_id, "summary": summary})
+            try:
+                # Extract date from run_id (RUN_YYYYMMDD_HHMMSS)
+                date_part = run_id.split('_')[1] if len(run_id.split('_')) > 1 else ''
+                month = f"{date_part[:4]}-{date_part[4:6]}" if len(date_part) >= 6 else ''
+                
+                # Try to read recon output from OUTPUT_DIR first (UPI), then UPLOAD_DIR (legacy)
+                recon_output = None
+                output_path = os.path.join(OUTPUT_DIR, run_id, 'recon_output.json')
+                if os.path.exists(output_path):
+                    with open(output_path, 'r') as f:
+                        recon_output = json.load(f)
+                else:
+                    # Try nested in UPLOAD_DIR
+                    for root_dir, dirs, files in os.walk(run_folder):
+                        if 'recon_output.json' in files:
+                            with open(os.path.join(root_dir, 'recon_output.json'), 'r') as f:
+                                recon_output = json.load(f)
+                            break
+                
+                if recon_output:
+                    # Handle UPI format with 'summary' key
+                    if isinstance(recon_output, dict) and 'summary' in recon_output:
+                        summary_data = recon_output['summary']
+                        all_txns = summary_data.get('total_transactions', 0)
+                        matched = summary_data.get('matched_count', 0)
+                        reconciled = matched
+                    else:
+                        # Legacy format
+                        all_txns = len(recon_output) if isinstance(recon_output, dict) else 0
+                        matched = sum(1 for k, v in (recon_output.items() if isinstance(recon_output, dict) else []) if isinstance(v, dict) and v.get('status') == 'MATCHED')
+                        reconciled = matched
+                    
+                    if month:
+                        historical_summaries.append({
+                            "run_id": run_id,
+                            "month": month,
+                            "allTxns": all_txns,
+                            "reconciled": reconciled,
+                            "unmatched": all_txns - reconciled
+                        })
+            except Exception as ex:
+                logger.debug(f"Could not process run {run_id}: {ex}")
+                continue
+        
         return historical_summaries
     except Exception as e:
         logger.error(f"Get historical summary error: {str(e)}")
@@ -633,9 +791,46 @@ async def get_latest_unmatched(user: dict = Depends(get_current_user)):
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         latest = sorted(runs)[-1]
-        run_root = os.path.join(UPLOAD_DIR, latest)
 
-        # search for nested recon_output.json
+        # First check OUTPUT_DIR (UPI format with summary and exceptions)
+        recon_out = os.path.join(OUTPUT_DIR, latest, 'recon_output.json')
+        if os.path.exists(recon_out):
+            with open(recon_out, 'r') as f:
+                data = json.load(f)
+            
+            # UPI format - extract unmatched/exception transactions
+            unmatched = []
+            if isinstance(data, dict) and 'exceptions' in data:
+                # All exceptions are unmatched transactions
+                for exc in data['exceptions']:
+                    if isinstance(exc, dict):
+                        unmatched.append({
+                            "RRN": exc.get('rrn', 'N/A'),
+                            "UPI_Tran_ID": exc.get('reference', 'N/A'),
+                            "source": exc.get('source', 'UNKNOWN'),
+                            "amount": exc.get('amount', 0),
+                            "date": exc.get('date', ''),
+                            "time": exc.get('time', ''),
+                            "exception_type": exc.get('exception_type', ''),
+                            "description": exc.get('description', ''),
+                            "ttum_required": exc.get('ttum_required', False),
+                            "ttum_type": exc.get('ttum_type', None),
+                            "debit_credit": exc.get('debit_credit', ''),
+                            "status": "UNMATCHED"
+                        })
+            
+            # Sort by amount descending for better visibility
+            unmatched = sorted(unmatched, key=lambda x: x.get('amount', 0), reverse=True)
+            
+            return JSONResponse(content={
+                "run_id": latest, 
+                "unmatched": unmatched, 
+                "total_unmatched": len(unmatched),
+                "format": "upi"
+            })
+
+        # Then check UPLOAD_DIR (legacy format)
+        run_root = os.path.join(UPLOAD_DIR, latest)
         recon_out = None
         for root_dir, dirs, files in os.walk(run_root):
             if 'recon_output.json' in files:
@@ -657,7 +852,7 @@ async def get_latest_unmatched(user: dict = Depends(get_current_user)):
             for rec in data.get('unmatched', []):
                 unmatched.append(rec)
 
-        return JSONResponse(content={"run_id": latest, "unmatched": unmatched})
+        return JSONResponse(content={"run_id": latest, "unmatched": unmatched, "format": "legacy"})
     except HTTPException:
         raise
     except Exception as e:
@@ -716,8 +911,13 @@ async def download_ttum(user: dict = Depends(get_current_user), run_id: Optional
             raise HTTPException(status_code=404, detail="No runs found")
         target = run_id if run_id else sorted(runs)[-1]
         run_folder = os.path.join(UPLOAD_DIR, target)
-        ttum_dir = os.path.join(run_folder, 'ttum')
-        if not os.path.exists(ttum_dir):
+        # search nested directories for 'ttum' folder
+        ttum_dir = None
+        for root_dir, dirs, files in os.walk(run_folder):
+            if 'ttum' in dirs:
+                ttum_dir = os.path.join(root_dir, 'ttum')
+                break
+        if not ttum_dir or not os.path.exists(ttum_dir):
             raise HTTPException(status_code=404, detail="TTUM folder not found for run")
 
         zip_path = os.path.join(ttum_dir, f"ttum_{target}.zip")
@@ -733,6 +933,144 @@ async def download_ttum(user: dict = Depends(get_current_user), run_id: Optional
     except Exception as e:
         logger.error(f"TTUM download error: {e}")
         raise HTTPException(status_code=500, detail="Failed to prepare TTUM files")
+
+
+@app.get("/api/v1/reports/ttum/csv")
+async def download_ttum_csv(user: dict = Depends(get_current_user), run_id: Optional[str] = None, cycle_id: Optional[str] = None):
+    """Download TTUM data in CSV format (all files zipped if multiple cycles)"""
+    import zipfile
+    try:
+        # Default to latest run
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target_run = run_id if run_id else sorted(runs)[-1]
+        
+        # Get TTUM files from output directory
+        from reporting import get_ttum_files
+        ttum_files = get_ttum_files(target_run, cycle_id, format='csv')
+        
+        if not ttum_files:
+            raise HTTPException(status_code=404, detail="No TTUM CSV files found")
+        
+        # If single file, return it directly
+        if len(ttum_files) == 1:
+            return FileResponse(ttum_files[0], media_type='text/csv', filename=os.path.basename(ttum_files[0]))
+        
+        # Multiple files - zip them
+        zip_path = os.path.join(OUTPUT_DIR, target_run, f"ttum_csv_{target_run}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
+        os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in ttum_files:
+                zf.write(file_path, arcname=os.path.basename(file_path))
+        
+        return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TTUM CSV download error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download TTUM CSV files")
+
+
+@app.get("/api/v1/reports/ttum/xlsx")
+async def download_ttum_xlsx(user: dict = Depends(get_current_user), run_id: Optional[str] = None, cycle_id: Optional[str] = None):
+    """Download TTUM data in XLSX format (all files zipped if multiple cycles)"""
+    import zipfile
+    try:
+        # Default to latest run
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target_run = run_id if run_id else sorted(runs)[-1]
+        
+        # Get TTUM files from output directory
+        from reporting import get_ttum_files
+        ttum_files = get_ttum_files(target_run, cycle_id, format='xlsx')
+        
+        if not ttum_files:
+            raise HTTPException(status_code=404, detail="No TTUM XLSX files found")
+        
+        # If single file, return it directly
+        if len(ttum_files) == 1:
+            return FileResponse(ttum_files[0], media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=os.path.basename(ttum_files[0]))
+        
+        # Multiple files - zip them
+        zip_path = os.path.join(OUTPUT_DIR, target_run, f"ttum_xlsx_{target_run}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
+        os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in ttum_files:
+                zf.write(file_path, arcname=os.path.basename(file_path))
+        
+        return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TTUM XLSX download error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download TTUM XLSX files")
+
+
+@app.get("/api/v1/reports/ttum/merged")
+async def download_ttum_merged(user: dict = Depends(get_current_user), run_id: Optional[str] = None, format: str = Query('xlsx', regex='^(csv|xlsx)$')):
+    """Download all TTUM data merged into a single file (CSV or XLSX)"""
+    try:
+        # Default to latest run
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target_run = run_id if run_id else sorted(runs)[-1]
+        
+        from reporting import get_ttum_files
+        ttum_files = get_ttum_files(target_run, format='all')
+        
+        if not ttum_files:
+            raise HTTPException(status_code=404, detail="No TTUM files found")
+        
+        # Read all JSON/CSV files and merge
+        import csv as csv_module
+        all_rows = []
+        all_headers = set()
+        
+        for file_path in ttum_files:
+            try:
+                if file_path.endswith('.json'):
+                    with open(file_path, 'r') as f:
+                        data = json.load(f)
+                        if isinstance(data, list):
+                            all_rows.extend(data)
+                            for row in data:
+                                if isinstance(row, dict):
+                                    all_headers.update(row.keys())
+                elif file_path.endswith('.csv'):
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        reader = csv_module.DictReader(f)
+                        for row in reader:
+                            all_rows.append(row)
+                            all_headers.update(row.keys())
+            except Exception as e:
+                logger.warning(f"Error reading TTUM file {file_path}: {e}")
+                continue
+        
+        if not all_rows:
+            raise HTTPException(status_code=404, detail="No TTUM data found")
+        
+        # Prepare output
+        headers = sorted(list(all_headers))
+        
+        if format.lower() == 'xlsx':
+            from reporting import write_ttum_xlsx
+            out_path = write_ttum_xlsx(target_run, None, f"TTUM_MERGED_{datetime.now().strftime('%Y%m%d_%H%M%S')}", headers, all_rows)
+            return FileResponse(out_path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=os.path.basename(out_path))
+        else:  # csv
+            from reporting import write_ttum_csv
+            out_path = write_ttum_csv(target_run, None, f"TTUM_MERGED_{datetime.now().strftime('%Y%m%d_%H%M%S')}", headers, all_rows)
+            return FileResponse(out_path, media_type='text/csv', filename=os.path.basename(out_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TTUM merged download error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create merged TTUM file")
 
 
 @app.get("/api/v1/enquiry")
@@ -798,11 +1136,69 @@ def _save_proposals(run_id: str, proposals):
         return False
 
 
+@app.get('/api/v1/force-match/proposals')
+async def get_force_match_proposals(run_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Get all force-match proposals for a run (or latest if not specified)"""
+    try:
+        if not run_id:
+            # Get latest run
+            runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+            if not runs:
+                raise HTTPException(status_code=404, detail="No runs found")
+            run_id = sorted(runs)[-1]
+        
+        proposals = _load_proposals(run_id)
+        
+        # Enrich proposals with transaction details from recon output
+        for prop in proposals:
+            prop_rrn = prop.get('rrn')
+            try:
+                # Try to get full transaction data
+                run_root = os.path.join(UPLOAD_DIR, run_id)
+                for root_dir, dirs, files in os.walk(run_root):
+                    if 'recon_output.json' in files:
+                        with open(os.path.join(root_dir, 'recon_output.json'), 'r') as f:
+                            recon_data = json.load(f)
+                        
+                        # Find transaction with matching RRN
+                        if isinstance(recon_data, dict) and 'exceptions' in recon_data:
+                            for exc in recon_data['exceptions']:
+                                if exc.get('rrn') == prop_rrn:
+                                    prop['transaction_details'] = exc
+                                    break
+                        break
+            except Exception:
+                pass  # If lookup fails, just return proposal as-is
+        
+        return JSONResponse(content={
+            "run_id": run_id,
+            "proposals": proposals,
+            "total": len(proposals)
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Get proposals error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve proposals")
+
+
 @app.post('/api/v1/force-match')
 async def propose_force_match(request: Request, user: dict = Depends(get_current_user), _rl=Depends(rate_limiter)):
     """Maker proposes a force-match for an RRN. Saves proposal with status 'proposed'."""
     try:
-        payload = await request.json()
+        # Support JSON body, form, or query-params for flexibility in clients/tests
+        payload = {}
+        try:
+            payload = await request.json()
+            if payload is None:
+                payload = {}
+        except Exception:
+            try:
+                form = await request.form()
+                payload = dict(form)
+            except Exception:
+                # fallback to query params
+                payload = dict(request.query_params)
         rrn = payload.get('rrn')
         action = payload.get('action')
         direction = payload.get('direction')
@@ -820,7 +1216,7 @@ async def propose_force_match(request: Request, user: dict = Depends(get_current
         maker = 'system'
         proposal = {
             'proposal_id': prop_id,
-            'rrn': rrn,
+            'rrn': rrn,  # Store actual RRN, not txn123
             'action': action,
             'direction': direction,
             'run_id': run_id,
@@ -838,7 +1234,7 @@ async def propose_force_match(request: Request, user: dict = Depends(get_current
         except Exception:
             pass
 
-        return JSONResponse(content={'status': 'proposed', 'proposal_id': prop_id})
+        return JSONResponse(content={'status': 'proposed', 'proposal_id': prop_id, 'rrn': rrn})
     except HTTPException:
         raise
     except Exception as e:
@@ -995,7 +1391,12 @@ async def get_upload_metadata(run_id: Optional[str] = None):
         if not run_id:
             runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
             if not runs:
-                raise HTTPException(status_code=404, detail="No runs found")
+                # Return empty metadata if no runs found
+                return {
+                    "run_id": None,
+                    "uploaded_files": [],
+                    "status": "no_runs_found"
+                }
             run_id = sorted(runs)[-1]
 
         # Note: This uses UPLOAD_DIR which might differ from file_handler.base_upload_dir
@@ -1003,16 +1404,42 @@ async def get_upload_metadata(run_id: Optional[str] = None):
         metadata_path = os.path.join(run_folder, "metadata.json")
 
         if not os.path.exists(metadata_path):
-            raise HTTPException(status_code=404, detail="Metadata not found for the given run_id")
+            # Return empty metadata if metadata file not found
+            return {
+                "run_id": run_id,
+                "uploaded_files": [],
+                "status": "metadata_not_found"
+            }
 
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
 
-        return metadata
+        # Transform saved_files to uploaded_files format for frontend
+        uploaded_files = []
+        if 'saved_files' in metadata and isinstance(metadata['saved_files'], dict):
+            for file_type, file_info in metadata['saved_files'].items():
+                uploaded_files.append(file_type)
+        
+        return {
+            "run_id": run_id,
+            "uploaded_files": uploaded_files,
+            "saved_files": metadata.get('saved_files', {}),
+            "cycle_id": metadata.get('cycle_id'),
+            "direction": metadata.get('direction'),
+            "run_date": metadata.get('run_date'),
+            "status": "success"
+        }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Get metadata error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve metadata")
+        return {
+            "run_id": None,
+            "uploaded_files": [],
+            "status": "error",
+            "error": str(e)
+        }
 
 @app.get("/api/v1/recon/latest/report")
 async def get_latest_report(user: dict = Depends(get_current_user)):
@@ -1022,17 +1449,26 @@ async def get_latest_report(user: dict = Depends(get_current_user)):
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         latest = sorted(runs)[-1]
-        run_root = os.path.join(UPLOAD_DIR, latest)
-
-        # Look for report file in nested directories
+        
+        # First check OUTPUT_DIR (for UPI results)
+        output_run_path = os.path.join(OUTPUT_DIR, latest)
+        if os.path.exists(output_run_path):
+            recon_output_path = os.path.join(output_run_path, "recon_output.json")
+            if os.path.exists(recon_output_path):
+                return FileResponse(recon_output_path, media_type='application/json', filename=f"recon_report_{latest}.json")
+        
+        # Then check UPLOAD_DIR (for legacy results)
+        upload_run_path = os.path.join(UPLOAD_DIR, latest)
         report_path = None
-        for root_dir, dirs, files in os.walk(run_root):
+        for root_dir, dirs, files in os.walk(upload_run_path):
             if 'report.txt' in files:
                 report_path = os.path.join(root_dir, 'report.txt')
                 break
 
         if report_path and os.path.exists(report_path):
             return FileResponse(report_path, media_type='text/plain', filename=f"recon_report_{latest}.txt")
+        elif os.path.exists(os.path.join(output_run_path, "recon_output.json")):
+            return FileResponse(os.path.join(output_run_path, "recon_output.json"), media_type='application/json', filename=f"recon_report_{latest}.json")
         else:
             raise HTTPException(status_code=404, detail="Report not found for the latest run")
 
@@ -1050,9 +1486,31 @@ async def get_unmatched_report(user: dict = Depends(get_current_user)):
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         latest = sorted(runs)[-1]
+        
+        # First check OUTPUT_DIR (UPI results)
+        recon_out = os.path.join(OUTPUT_DIR, latest, 'recon_output.json')
+        if os.path.exists(recon_out):
+            with open(recon_out, 'r') as f:
+                data = json.load(f)
+            
+            # Extract unmatched from UPI format
+            if isinstance(data, dict) and 'summary' in data:
+                # UPI format - convert exceptions to key-value format for frontend
+                exceptions_dict = {}
+                for exc in data.get('exceptions', []):
+                    if isinstance(exc, dict):
+                        rrn = exc.get('rrn') or exc.get('RRN') or 'unknown'
+                        exceptions_dict[rrn] = exc
+                
+                return JSONResponse(content={
+                    "run_id": latest, 
+                    "data": exceptions_dict,
+                    "format": "upi",
+                    "summary": data.get('summary', {})
+                })
+        
+        # Then check UPLOAD_DIR (legacy results)
         run_root = os.path.join(UPLOAD_DIR, latest)
-
-        # Look for unmatched data in recon_output.json
         recon_out = None
         for root_dir, dirs, files in os.walk(run_root):
             if 'recon_output.json' in files:
@@ -1065,22 +1523,113 @@ async def get_unmatched_report(user: dict = Depends(get_current_user)):
         with open(recon_out, 'r') as f:
             data = json.load(f)
 
-        # Extract unmatched transactions
-        unmatched = []
-        if isinstance(data, dict) and not data.get('matched') and not data.get('unmatched'):
-            for rrn, rec in data.items():
-                if isinstance(rec, dict) and rec.get('status') in ['ORPHAN', 'PARTIAL_MATCH', 'PARTIAL_MISMATCH']:
-                    unmatched.append({"RRN": rrn, "status": rec.get('status'), "record": rec})
+        # Return legacy format (already keyed by RRN)
+        if isinstance(data, dict):
+            return JSONResponse(content={"run_id": latest, "data": data, "format": "legacy"})
         else:
-            unmatched = data.get('unmatched', [])
-
-        return JSONResponse(content={"run_id": latest, "unmatched": unmatched})
+            return JSONResponse(content={"run_id": latest, "data": {}, "format": "legacy"})
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Get unmatched report error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve unmatched report")
+
+
+@app.get("/api/v1/reports/matched")
+async def download_matched_reports(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Package pairwise matched CSVs (GL_vs_Switch, Switch_vs_NPCI, GL_vs_NPCI) into a ZIP and return."""
+    import zipfile
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+        run_folder = os.path.join(UPLOAD_DIR, target)
+
+        # look for reports directory
+        reports_dir = None
+        for root_dir, dirs, files in os.walk(run_folder):
+            if 'reports' in dirs:
+                reports_dir = os.path.join(root_dir, 'reports')
+                break
+        if not reports_dir or not os.path.exists(reports_dir):
+            raise HTTPException(status_code=404, detail="Reports directory not found for run")
+
+        matched_files = [f for f in os.listdir(reports_dir) if any(x in f.lower() for x in ('gl_vs_switch', 'switch_vs_npci', 'gl_vs_npci', 'gl_switch', 'switch_npci', 'gl_npci'))]
+        if not matched_files:
+            raise HTTPException(status_code=404, detail="No matched reports found for run")
+
+        zip_path = os.path.join(reports_dir, f"matched_reports_{target}.zip")
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for fname in matched_files:
+                fp = os.path.join(reports_dir, fname)
+                if os.path.isfile(fp):
+                    zf.write(fp, arcname=fname)
+
+        return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Matched reports download error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to prepare matched reports")
+
+
+@app.get("/api/v1/reports/summary")
+async def download_summary(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Return the summary.json for a run."""
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+        run_root = os.path.join(UPLOAD_DIR, target)
+
+        summary_path = None
+        for root_dir, dirs, files in os.walk(run_root):
+            if 'summary.json' in files:
+                summary_path = os.path.join(root_dir, 'summary.json')
+                break
+
+        if summary_path and os.path.exists(summary_path):
+            return FileResponse(summary_path, media_type='application/json', filename=os.path.basename(summary_path))
+        else:
+            raise HTTPException(status_code=404, detail='Summary not found for run')
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Summary download error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve summary")
+
+
+@app.get("/api/v1/recon/latest/adjustments")
+async def download_adjustments(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Return ANNEXURE IV adjustment CSV for latest run if present."""
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+        run_root = os.path.join(UPLOAD_DIR, target)
+
+        annex_path = None
+        for root_dir, dirs, files in os.walk(run_root):
+            for f in files:
+                if f.lower().startswith('annexure_iv') and f.lower().endswith('.csv'):
+                    annex_path = os.path.join(root_dir, f)
+                    break
+            if annex_path:
+                break
+
+        if annex_path and os.path.exists(annex_path):
+            return FileResponse(annex_path, media_type='text/csv', filename=os.path.basename(annex_path))
+        else:
+            raise HTTPException(status_code=404, detail='Annexure file not found for run')
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Adjustment download error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve adjustments file")
 
 @app.get("/api/v1/recon/latest/raw")
 async def get_latest_raw_data(user: dict = Depends(get_current_user)):
@@ -1090,14 +1639,18 @@ async def get_latest_raw_data(user: dict = Depends(get_current_user)):
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         latest = sorted(runs)[-1]
-        run_root = os.path.join(UPLOAD_DIR, latest)
-
-        # Look for recon_output.json
-        recon_out = None
-        for root_dir, dirs, files in os.walk(run_root):
-            if 'recon_output.json' in files:
-                recon_out = os.path.join(root_dir, 'recon_output.json')
-                break
+        
+        # First check OUTPUT_DIR (UPI results)
+        recon_out = os.path.join(OUTPUT_DIR, latest, 'recon_output.json')
+        
+        if not os.path.exists(recon_out):
+            # Then check UPLOAD_DIR (legacy results)
+            run_root = os.path.join(UPLOAD_DIR, latest)
+            recon_out = None
+            for root_dir, dirs, files in os.walk(run_root):
+                if 'recon_output.json' in files:
+                    recon_out = os.path.join(root_dir, 'recon_output.json')
+                    break
 
         if not recon_out or not os.path.exists(recon_out):
             raise HTTPException(status_code=404, detail="Reconciliation output not found")
@@ -1105,7 +1658,76 @@ async def get_latest_raw_data(user: dict = Depends(get_current_user)):
         with open(recon_out, 'r') as f:
             data = json.load(f)
 
-        # Count summary statistics
+        # Handle UPI format (has 'summary' key)
+        if isinstance(data, dict) and 'summary' in data:
+            summary = data.get('summary', {})
+            
+            # Convert exceptions array to RRN-keyed dict with full transaction details for ForceMatch
+            exceptions_dict = {}
+            for exc in data.get('exceptions', []):
+                if isinstance(exc, dict):
+                    rrn = exc.get('rrn') or exc.get('RRN')
+                    if rrn:
+                        # Build transaction object compatible with ForceMatch
+                        source = exc.get('source', '').lower()
+                        transaction = {
+                            'rrn': rrn,
+                            'status': 'ORPHAN',  # Default status for exceptions
+                            'amount': exc.get('amount', 0),
+                            'date': exc.get('date', ''),
+                            'reference': exc.get('reference', ''),
+                            'exception_type': exc.get('exception_type', ''),
+                            'ttum_required': exc.get('ttum_required', False),
+                            'ttum_type': exc.get('ttum_type', ''),
+                            'source': source
+                        }
+                        
+                        # Map the exception to the appropriate source field
+                        if source == 'cbs':
+                            transaction['cbs'] = {
+                                'rrn': rrn,
+                                'amount': exc.get('amount', 0),
+                                'date': exc.get('date', ''),
+                                'reference': exc.get('reference', '')
+                            }
+                        elif source == 'switch':
+                            transaction['switch'] = {
+                                'rrn': rrn,
+                                'amount': exc.get('amount', 0),
+                                'date': exc.get('date', ''),
+                                'reference': exc.get('reference', '')
+                            }
+                        elif source == 'npci':
+                            transaction['npci'] = {
+                                'rrn': rrn,
+                                'amount': exc.get('amount', 0),
+                                'date': exc.get('date', ''),
+                                'reference': exc.get('reference', '')
+                            }
+                        
+                        exceptions_dict[rrn] = transaction
+            
+            # If we have exceptions, return them in the expected format
+            return JSONResponse(content={
+                "run_id": latest,
+                "data": exceptions_dict if exceptions_dict else data.get('details', {}),
+                "format": "upi",
+                "summary": {
+                    "total_cbs": summary.get('total_cbs', 0),
+                    "total_switch": summary.get('total_switch', 0),
+                    "total_npci": summary.get('total_npci', 0),
+                    "matched_cbs": summary.get('matched_cbs', 0),
+                    "matched_switch": summary.get('matched_switch', 0),
+                    "matched_npci": summary.get('matched_npci', 0),
+                    "unmatched_cbs": summary.get('unmatched_cbs', 0),
+                    "unmatched_switch": summary.get('unmatched_switch', 0),
+                    "unmatched_npci": summary.get('unmatched_npci', 0),
+                    "ttum_required": summary.get('ttum_required', 0),
+                    "file_path": recon_out
+                }
+            })
+
+        # Handle legacy format
         total_rrns = len(data) if isinstance(data, dict) else len(data.get('matched', [])) + len(data.get('unmatched', []))
         matched_count = 0
         unmatched_count = 0
@@ -1127,6 +1749,7 @@ async def get_latest_raw_data(user: dict = Depends(get_current_user)):
         return JSONResponse(content={
             "run_id": latest,
             "data": data,
+            "format": "legacy",
             "summary": {
                 "total_rrns": total_rrns,
                 "matched_count": matched_count,
@@ -1166,6 +1789,142 @@ async def get_rollback_history(run_id: Optional[str] = None, user: dict = Depend
     except Exception as e:
         logger.error(f"Get rollback history error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve rollback history")
+
+
+@app.post("/api/v1/rollback/whole-process")
+async def api_rollback_whole_process(run_id: Optional[str] = Query(None), reason: Optional[str] = Query(None), user: dict = Depends(get_current_user)):
+    try:
+        if not run_id or not reason:
+            raise HTTPException(status_code=400, detail="run_id and reason are required")
+        result = rollback_manager.whole_process_rollback(run_id, reason, confirmation_required=False)
+        try:
+            audit.log_rollback_operation(run_id, 'whole_process', user_id='system', details={'api_call': True})
+        except Exception:
+            pass
+        return JSONResponse(content={"status": "ok", "result": result})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Whole-process rollback API error: {e}")
+        raise HTTPException(status_code=500, detail="Rollback operation failed")
+
+
+@app.post("/api/v1/rollback/cycle-wise")
+async def api_rollback_cycle_wise(run_id: Optional[str] = Query(None), cycle_id: Optional[str] = Query(None), user: dict = Depends(get_current_user)):
+    try:
+        if not run_id or not cycle_id:
+            raise HTTPException(status_code=400, detail="run_id and cycle_id are required")
+        result = rollback_manager.cycle_wise_rollback(run_id, cycle_id, confirmation_required=False)
+        try:
+            audit.log_rollback_operation(run_id, 'cycle_wise', user_id='system', details={'api_call': True, 'cycle_id': cycle_id})
+        except Exception:
+            pass
+        return JSONResponse(content={"status": "ok", "result": result})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Cycle-wise rollback API error: {e}")
+        raise HTTPException(status_code=500, detail="Rollback operation failed")
+
+
+@app.post("/api/v1/rollback/ingestion")
+async def api_rollback_ingestion(run_id: Optional[str] = Query(None), filename: Optional[str] = Query(None), error: Optional[str] = Query(None), user: dict = Depends(get_current_user)):
+    try:
+        if not run_id or not filename:
+            raise HTTPException(status_code=400, detail="run_id and filename are required")
+        result = rollback_manager.ingestion_rollback(run_id, filename, validation_error=error or 'ingestion rollback')
+        try:
+            audit.log_rollback_operation(run_id, 'ingestion', user_id='system', details={'api_call': True, 'filename': filename})
+        except Exception:
+            pass
+        return JSONResponse(content={"status": "ok", "result": result})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ingestion rollback API error: {e}")
+        raise HTTPException(status_code=500, detail="Rollback operation failed")
+
+
+@app.post("/api/v1/rollback/mid-recon")
+async def api_rollback_mid_recon(run_id: Optional[str] = Query(None), error: Optional[str] = Query(None), user: dict = Depends(get_current_user)):
+    try:
+        if not run_id:
+            raise HTTPException(status_code=400, detail="run_id is required")
+        result = rollback_manager.mid_recon_rollback(run_id, error_message=error or 'mid-recon rollback', affected_transactions=None, confirmation_required=False)
+        try:
+            audit.log_rollback_operation(run_id, 'mid_recon', user_id='system', details={'api_call': True})
+        except Exception:
+            pass
+        return JSONResponse(content={"status": "ok", "result": result})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Mid-recon rollback API error: {e}")
+        raise HTTPException(status_code=500, detail="Rollback operation failed")
+
+
+@app.post("/api/v1/rollback/accounting")
+async def api_rollback_accounting(run_id: Optional[str] = Query(None), reason: Optional[str] = Query(None), user: dict = Depends(get_current_user)):
+    try:
+        if not run_id or not reason:
+            raise HTTPException(status_code=400, detail="run_id and reason are required")
+        result = rollback_manager.accounting_rollback(run_id, reason, voucher_ids=None, confirmation_required=False)
+        try:
+            audit.log_rollback_operation(run_id, 'accounting', user_id='system', details={'api_call': True})
+        except Exception:
+            pass
+        return JSONResponse(content={"status": "ok", "result": result})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Accounting rollback API error: {e}")
+        raise HTTPException(status_code=500, detail="Rollback operation failed")
+
+
+@app.get('/api/v1/rollback/available-cycles')
+async def api_get_available_cycles(run_id: Optional[str] = Query(None)):
+    try:
+        if not run_id:
+            raise HTTPException(status_code=400, detail='run_id is required')
+        
+        cycles = set()
+        
+        # Check in UPLOAD_DIR (where files are uploaded and organized by cycle)
+        upload_base = os.path.join(UPLOAD_DIR, run_id)
+        if os.path.exists(upload_base):
+            for entry in os.listdir(upload_base):
+                # Look for cycle_<id> folders
+                if entry.startswith('cycle_'):
+                    cycle_id = entry.split('cycle_', 1)[1]
+                    cycles.add(cycle_id)
+        
+        # Also check in OUTPUT_DIR for any additional cycles
+        output_base = os.path.join(OUTPUT_DIR, run_id)
+        if os.path.exists(output_base):
+            for sub in ('reports', 'ttum', 'annexure', ''):
+                path = os.path.join(output_base, sub) if sub else output_base
+                if os.path.exists(path):
+                    try:
+                        for entry in os.listdir(path):
+                            if entry.startswith('cycle_'):
+                                cycle_id = entry.split('cycle_', 1)[1]
+                                cycles.add(cycle_id)
+                    except (OSError, PermissionError):
+                        continue
+        
+        available_cycles = sorted(list(cycles))
+        return JSONResponse(content={
+            'run_id': run_id, 
+            'status': 'success', 
+            'available_cycles': available_cycles, 
+            'total_available': len(available_cycles), 
+            'all_cycles': available_cycles
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get available cycles error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list available cycles")
 
 
 

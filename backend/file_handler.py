@@ -19,9 +19,28 @@ class FileHandler:
         run_folder = os.path.join(UPLOAD_DIR, run_id)
         os.makedirs(run_folder, exist_ok=True)
 
-        # If cycle provided, create subfolder
+        # If cycle provided, compute a canonical cycle_id using run_date (prefer YYYY-MM-DD or YYYYMMDD)
+        cycle_id = None
         if cycle:
-            cycle_folder_name = f"cycle_{cycle}"
+            # normalize run_date to YYYYMMDD
+            from datetime import datetime
+            run_date_str = None
+            if run_date:
+                for fmt in ('%Y-%m-%d', '%Y%m%d'):
+                    try:
+                        run_date_str = datetime.strptime(run_date, fmt).strftime('%Y%m%d')
+                        break
+                    except Exception:
+                        continue
+            # fallback to today's date if run_date invalid/missing
+            if not run_date_str:
+                run_date_str = datetime.now().strftime('%Y%m%d')
+
+            # sanitize cycle component
+            safe_cycle = str(cycle).strip().replace(' ', '_')
+            cycle_id = f"{run_date_str}_{safe_cycle}"
+
+            cycle_folder_name = f"cycle_{cycle_id}"
             run_folder = os.path.join(run_folder, cycle_folder_name)
             os.makedirs(run_folder, exist_ok=True)
 
@@ -93,10 +112,10 @@ class FileHandler:
                 continue
 
         # Save enhanced file mapping and metadata
-        # add run-level metadata
+        # add run-level metadata (persist canonical cycle_id when available)
         meta = {
             'run_id': run_id,
-            'cycle': cycle,
+            'cycle_id': cycle_id if cycle_id else cycle,
             'direction': direction,
             'run_date': run_date,
             'saved_files': saved_files
@@ -170,7 +189,7 @@ class FileHandler:
         # Extended column definitions for UPI files
         upi_column_definitions = {
             'UPI_Tran_ID': ['upi_tran_id', 'upi id', 'upi_transaction_id', 'upi_txn_id', 'upi_txn',
-                           'transaction_ref', 'transaction_ref_no', 'customer reference number'],
+                           'transaction_ref', 'transaction_ref_no', 'customer reference number', 'transaction_id', 'transaction id'],
             'RRN': ['rrn', 'reference number', 'ref number', 'reference', 'ref',
                    'transaction id', 'txn id', 'transaction_id', 'txn_id', 'id',
                    'unique id', 'unique_id', 'reference_no', 'ref_no', 'system trace audit number'],
@@ -249,19 +268,58 @@ class FileHandler:
 
         # Tran_Type validation for NPCI files
         if 'Tran_Type' in df.columns:
+            import re
             tt = df['Tran_Type'].astype(str).str.strip().str.upper()
-            # U2 for Merchant transactions, U3 for Raw transactions
-            if not tt.isin(['U2', 'U3']).all():
-                return False, 'Tran_Type must be U2 (Merchant) or U3 (Raw) for all NPCI transactions'
+            # Accept common NPCI Tran_Type patterns: U followed by digits (U2, U3, etc.)
+            non_empty = tt[tt.notna() & (tt != '')]
+            if not non_empty.empty:
+                invalid = [v for v in non_empty.unique() if not re.match(r'^U\d+$', str(v))]
+                if invalid:
+                    # Allow certain benign placeholders (export artifacts) like NONE/NA and do not block upload.
+                    benign = [v for v in invalid if str(v).upper() in ('NONE', 'NA', 'NAN', '') or 'NONE' in str(v).upper()]
+                    other = [v for v in invalid if v not in benign]
+                    if other:
+                        return False, f'Tran_Type contains unexpected values: {other}; expected pattern U<digit> (e.g., U2, U3)'
+                    else:
+                        # only benign values present — log a warning and accept
+                        try:
+                            logger.warning(f"Tran_Type contains benign placeholder values {invalid}; accepting upload")
+                        except Exception:
+                            pass
 
         # RC (Response Code) validation
         if 'RC' in df.columns:
-            rc_values = df['RC'].astype(str).str.strip()
-            # Valid RC values (00=success, RB=deemed accepted, others=failure)
-            valid_rcs = ['00', 'RB'] + [str(i).zfill(2) for i in range(1, 100)]
-            invalid_rcs = rc_values[~rc_values.isin(valid_rcs)]
-            if len(invalid_rcs) > 0:
-                return False, f'Invalid Response Codes found: {invalid_rcs.unique()}'
+            rc_values = df['RC'].astype(str).str.strip().fillna('')
+            # Accept numeric codes (00, 01..99), RB, and common textual statuses produced by exports
+            import re
+            def is_valid_rc(v: str) -> bool:
+                if v == '':
+                    return True
+                if re.match(r'^RB', v, flags=re.IGNORECASE):
+                    return True
+                if re.match(r'^0?\d{1,2}$', v):
+                    return True
+                if re.match(r'^U?\d+$', v):
+                    return True
+                # common textual statuses
+                if v.upper() in ('00', '0', 'SUCCESS', 'S', 'RB', 'FAILED', 'FAIL', 'F', 'PENDING', 'P'):
+                    return True
+                return False
+
+            invalid_mask = ~rc_values.apply(is_valid_rc)
+            invalid_vals = rc_values[invalid_mask].unique().tolist()
+            if invalid_vals:
+                # If invalid values look like benign placeholders (e.g., column headers, export markers), allow but warn
+                benign = [v for v in invalid_vals if any(x in str(v).upper() for x in ('NONE', 'N/A', 'NA', 'PENDING', 'SUCCESS', 'FAILED'))]
+                other = [v for v in invalid_vals if v not in benign]
+                if other:
+                    return False, f'Invalid Response Codes found: {other}'
+                else:
+                    try:
+                        logger = get_logger(__name__)
+                        logger.warning(f"RC column contains textual/status markers {invalid_vals}; accepting upload")
+                    except Exception:
+                        pass
 
         # UPI_Tran_ID validation for NPCI files
         if 'UPI_Tran_ID' in df.columns:
@@ -276,10 +334,26 @@ class FileHandler:
 
         # Dr_Cr validation for CBS files
         if 'Dr_Cr' in df.columns:
-            dr_cr_values = df['Dr_Cr'].astype(str).str.strip().str.upper()
-            valid_values = ['DR', 'CR', 'D', 'C', 'DEBIT', 'CREDIT']
-            if not dr_cr_values.isin(valid_values).all():
-                return False, 'Dr_Cr must be DR/CR or DEBIT/CREDIT in CBS files'
+            # Normalize values conservatively and accept common variants
+            dr_cr_values = df['Dr_Cr'].astype(str).fillna('').str.strip().str.upper()
+            # Normalize textual forms to DR/CR
+            norm = dr_cr_values.str.replace(r'[^A-Z]', '', regex=True)
+            norm = norm.replace({'DEBIT': 'DR', 'DEBITS': 'DR', 'CREDIT': 'CR', 'CREDITS': 'CR'})
+            # Accept single-letter and full forms after normalization
+            valid_norms = {'DR', 'CR', 'D', 'C', ''}
+            invalids = [v for v in norm.unique() if v not in valid_norms]
+            if invalids:
+                # If invalids look like file-type markers (e.g., 'CBSINWARD', 'CBSOUTWARD') or placeholders,
+                # treat them as benign export artifacts and accept the file with a warning.
+                benign_markers = [v for v in invalids if any(x in str(v) for x in ('CBS', 'INWARD', 'OUTWARD', 'CBSINWARD', 'CBSOUTWARD', 'CBS_IN', 'CBS_OUT')) or str(v).upper() in ('NONE','NA','NAN','')]
+                other_invalids = [v for v in invalids if v not in benign_markers]
+                if other_invalids:
+                    return False, f"Dr_Cr contains unexpected values: {other_invalids}; expected DR/CR or equivalent"
+                else:
+                    try:
+                        logger.warning(f"Dr_Cr column contains benign markers {invalids}; accepting upload")
+                    except Exception:
+                        pass
 
         return True, ''
 
@@ -495,7 +569,7 @@ class FileHandler:
         
         # Standard column definitions with multiple possible names
         column_definitions = {
-            'UPI_Tran_ID': ['upi_tran_id', 'upi id', 'upi_transaction_id', 'upi_txn_id', 'upi_txn', 'transaction_ref', 'transaction_ref_no'],
+            'UPI_Tran_ID': ['upi_tran_id', 'upi id', 'upi_transaction_id', 'upi_txn_id', 'upi_txn', 'transaction_ref', 'transaction_ref_no', 'transaction_id', 'transaction id'],
             'RRN': ['rrn', 'reference number', 'ref number', 'reference', 'ref', 
                    'transaction id', 'txn id', 'transaction_id', 'txn_id', 'id', 
                    'unique id', 'unique_id', 'reference_no', 'ref_no'],
@@ -525,8 +599,8 @@ class FileHandler:
             else:
                 renamed_df[standard_col] = None
         
-        # Keep only required columns + Source
-        required_cols = ['RRN', 'Amount', 'Tran_Date', 'Dr_Cr', 'RC', 'Tran_Type', 'Source']
+        # Keep UPI-specific columns + required columns + Source
+        required_cols = ['UPI_Tran_ID', 'RRN', 'Amount', 'Tran_Date', 'Dr_Cr', 'RC', 'Tran_Type', 'Source']
         available_cols = [col for col in required_cols if col in renamed_df.columns]
         
         return renamed_df[available_cols]

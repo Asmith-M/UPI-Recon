@@ -98,6 +98,61 @@ async def chatbot_lookup(
                 }
             )
             return JSONResponse(status_code=400, content=error_response)
+        # Enforce cycle/run scoping: require run_id or cycle_id or explicit allow_latest
+        import os
+        run_id = os.getenv('CHATBOT_QUERY_RUN_ID') or None
+        cycle_id = os.getenv('CHATBOT_QUERY_CYCLE_ID') or None
+        allow_latest = os.getenv('CHATBOT_ALLOW_LATEST', 'false').lower() in ('1','true','yes')
+
+        if not run_id and not cycle_id and not allow_latest:
+            return JSONResponse(status_code=400, content=response_formatter.format_validation_error(
+                "Chatbot queries must include 'run_id' or 'cycle_id' or set allow_latest=true",
+                details={'provided': {'run_id': run_id, 'cycle_id': cycle_id, 'allow_latest': allow_latest}}
+            ))
+
+        # Resolve run_id when only cycle_id provided by searching runs for matching cycle
+        if not run_id and cycle_id:
+            from pathlib import Path
+            DATA_DIR = Path(__file__).resolve().parents[1] / 'data' / 'output'
+            candidates = [p for p in DATA_DIR.iterdir() if p.is_dir() and p.name.startswith('RUN_')]
+            candidates.sort(reverse=True)
+            found_run = None
+            for cand in candidates:
+                try:
+                    recon_path = cand / 'recon_output.json'
+                    if not recon_path.exists():
+                        continue
+                    import json
+                    with open(recon_path, 'r', encoding='utf-8') as f:
+                        rd = json.load(f)
+                    def has_cycle(d):
+                        if isinstance(d, dict):
+                            for v in d.values():
+                                if isinstance(v, dict) and v.get('cycle_id') == cycle_id:
+                                    return True
+                        else:
+                            for v in d:
+                                if isinstance(v, dict) and v.get('cycle_id') == cycle_id:
+                                    return True
+                        return False
+                    if has_cycle(rd):
+                        found_run = cand.name
+                        break
+                except Exception:
+                    continue
+            if not found_run:
+                return JSONResponse(status_code=404, content=response_formatter.format_not_found_response(cycle_id, 'cycle_id', 'UNKNOWN'))
+            run_id = found_run
+
+        if not run_id and allow_latest:
+            run_id = lookup.get_latest_run_id()
+
+        # Load recon data for resolved run_id
+        try:
+            data = lookup.load_recon_data(run_id)
+            indexes = lookup.build_indexes(data)
+        except Exception as e:
+            return JSONResponse(status_code=500, content=response_formatter.format_error_response(e, context='load_recon_data'))
         
         # Step 2: Validate and search by RRN if provided
         if rrn:
@@ -114,7 +169,7 @@ async def chatbot_lookup(
                 return JSONResponse(status_code=400, content=error_response)
             
             # Search by RRN
-            transaction = lookup.search_by_rrn(rrn)
+            transaction = indexes['rrn_index'].get(rrn)
             search_type = "rrn"
             identifier = rrn
         
@@ -132,23 +187,27 @@ async def chatbot_lookup(
                 return JSONResponse(status_code=400, content=error_response)
             
             # Search by TXN_ID
-            transaction = lookup.search_by_txn_id(f"TXN{txn_id}" if not txn_id.startswith("TXN") else txn_id)
+            tkey = f"TXN{txn_id}" if not txn_id.startswith("TXN") else txn_id
+            transaction = indexes['txn_index'].get(tkey)
             search_type = "txn_id"
             identifier = txn_id
         
         # Step 4: Handle not found
         if transaction is None:
-            run_id = lookup.CURRENT_RUN_ID or "UNKNOWN"
+            run_id_resp = run_id or lookup.CURRENT_RUN_ID or "UNKNOWN"
             error_response = response_formatter.format_not_found_response(
-                identifier, 
-                search_type, 
-                run_id
+                identifier,
+                search_type,
+                run_id_resp
             )
             return JSONResponse(status_code=404, content=error_response)
         
         # Step 5: Format and return successful response
-        run_id = lookup.CURRENT_RUN_ID or "UNKNOWN"
-        response = response_formatter.format_transaction_response(transaction, run_id)
+        run_id_resp = run_id or lookup.CURRENT_RUN_ID or "UNKNOWN"
+        response = response_formatter.format_transaction_response(transaction, run_id_resp)
+        # Add cycle and source metadata to chatbot response
+        response["cycle_id"] = cycle_id or transaction.get('cycle_id')
+        response["report_source"] = f"run:{run_id_resp}, cycle:{response.get('cycle_id', 'UNKNOWN')}"
         return JSONResponse(status_code=200, content=response)
     
     except Exception as e:

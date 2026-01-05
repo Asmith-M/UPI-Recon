@@ -267,6 +267,8 @@ class RollbackManager:
             logger.error(f"Full rollback failed: {str(e)}")
             self._update_rollback_status(rollback_id, RollbackStatus.FAILED)
             raise
+        finally:
+            self._release_rollback_lock()
 
     # ========================================================================
     # STAGE 1: INGESTION ROLLBACK
@@ -419,6 +421,8 @@ class RollbackManager:
             logger.error(f"Ingestion rollback failed: {str(e)}")
             self._update_rollback_status(rollback_id, RollbackStatus.FAILED)
             raise
+        finally:
+            self._release_rollback_lock()
     
     # ========================================================================
     # STAGE 2: MID-RECON ROLLBACK
@@ -638,6 +642,8 @@ class RollbackManager:
             logger.error(f"Mid-recon rollback failed: {str(e)}")
             self._update_rollback_status(rollback_id, RollbackStatus.FAILED)
             raise
+        finally:
+            self._release_rollback_lock()
     
     # ========================================================================
     # STAGE 3: CYCLE-WISE ROLLBACK
@@ -714,6 +720,21 @@ class RollbackManager:
             except Exception as backup_error:
                 logger.error(f"Failed to create backup: {str(backup_error)}")
                 raise ValueError(f"Cannot proceed without backup: {str(backup_error)}")
+
+            # Remove cycle-specific generated files (reports, ttum, annexure, audit)
+            deleted_paths = []
+            for sub in ('reports', 'ttum', 'annexure', 'audit'):
+                subdir = os.path.join(output_dir, sub, f'cycle_{cycle_id}')
+                if os.path.exists(subdir):
+                    try:
+                        # collect files for logging
+                        for root, dirs, files in os.walk(subdir):
+                            for fn in files:
+                                deleted_paths.append(os.path.join(root, fn))
+                        shutil.rmtree(subdir)
+                        logger.info(f"Deleted cycle-specific directory: {subdir}")
+                    except Exception as del_err:
+                        logger.warning(f"Failed to delete {subdir}: {del_err}")
 
             # Atomic cycle transaction restoration
             transactions_restored = []
@@ -841,6 +862,8 @@ class RollbackManager:
                 "transactions_restored": len(cycle_txns),
                 "run_id": run_id,
                 "backup_created": backup_path,
+                "deleted_files_count": len(deleted_paths),
+                "deleted_paths": deleted_paths,
                 "confirmation_provided": not confirmation_required
             }
 
@@ -848,6 +871,8 @@ class RollbackManager:
             logger.error(f"Cycle-wise rollback failed: {str(e)}")
             self._update_rollback_status(rollback_id, RollbackStatus.FAILED)
             raise
+        finally:
+            self._release_rollback_lock()
     
     # ========================================================================
     # STAGE 4: ACCOUNTING ROLLBACK
@@ -1027,6 +1052,8 @@ class RollbackManager:
             logger.error(f"Accounting rollback failed: {str(e)}")
             self._update_rollback_status(rollback_id, RollbackStatus.FAILED)
             raise
+        finally:
+            self._release_rollback_lock()
     
     # ========================================================================
     # UTILITY METHODS
@@ -1042,9 +1069,10 @@ class RollbackManager:
         return history
     
     def _validate_run_exists(self, run_id: str) -> bool:
-        """Validate that the run folder exists"""
-        run_folder = os.path.join(self.upload_dir, run_id)
-        return os.path.exists(run_folder)
+        """Validate that the run folder exists in either upload or output dir"""
+        upload_run = os.path.exists(os.path.join(self.upload_dir, run_id))
+        output_run = os.path.exists(os.path.join(self.output_dir, run_id))
+        return upload_run or output_run
 
     def _validate_files_exist(self, run_id: str, required_files: List[str]) -> Tuple[bool, str]:
         """Validate that required files exist for rollback"""

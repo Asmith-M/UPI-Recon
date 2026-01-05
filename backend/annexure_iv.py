@@ -25,7 +25,9 @@ from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 import re
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Optional
+from reporting import write_report
+from config import OUTPUT_DIR
 
 # Exact, fixed column order required by NPCI (do not change)
 COLUMN_ORDER = [
@@ -148,11 +150,16 @@ def _validate_and_normalize(record: Dict) -> Dict:
     return out
 
 
-def generate_annexure_iv_csv(records: List[Dict], output_path: str):
-    """Generate Annexure-IV CSV at the given output_path.
+def generate_annexure_iv_csv(records: List[Dict], output_path: Optional[str] = None, run_id: Optional[str] = None, cycle_id: Optional[str] = None):
+    """Generate Annexure-IV CSV.
 
-    records: list of dicts each containing keys matching COLUMN_ORDER.
-    output_path: path to write the CSV (overwrites if exists).
+    Preferred usage is to provide `run_id` (and optional `cycle_id`) so the
+    file is written to the standardized output folder structured as:
+
+        <OUTPUT_DIR>/<run_id>/annexure/[cycle_<cycle_id>/]ANNEXURE_IV_<run_id>.csv
+
+    Backwards-compatible: if `output_path` provided and `run_id` is None,
+    writes directly to `output_path` (legacy behaviour).
     """
     if not isinstance(records, list):
         raise ValueError('records must be a list of dictionaries')
@@ -171,6 +178,17 @@ def generate_annexure_iv_csv(records: List[Dict], output_path: str):
             raise ValueError(f'Duplicate Bankadjref detected: {br}')
         seen_bankrefs.add(br)
         normalized.append(row)
+
+    # If run_id provided, use standardized reporting write
+    if run_id:
+        filename = f"ANNEXURE_IV_{run_id}.csv"
+        # Use write_report which enforces UTF-8 and header ordering
+        out = write_report(run_id, cycle_id, 'annexure', filename, COLUMN_ORDER, normalized)
+        return out
+
+    # Fallback legacy write to provided output_path
+    if not output_path:
+        raise ValueError('Either run_id or output_path must be provided')
 
     # Build DataFrame using exact column order
     df = pd.DataFrame(normalized, columns=COLUMN_ORDER)

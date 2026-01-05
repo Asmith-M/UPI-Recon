@@ -88,7 +88,7 @@ def generate_master(num_records):
         rc = str(random.randint(100, 999))  # Response code
 
         rows.append({
-            "Transaction_ID": txn_id,
+            "Transaction_ID": txn_id,  # Maps to UPI_Tran_ID via file_handler._smart_map_columns()
             "RRN": rrn,
             "Amount": amount,
             "Tran_Date": date,

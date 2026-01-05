@@ -52,7 +52,7 @@ export default function Recon() {
         unmatched: { count: 0, amount: 0 },
         hanging: { count: 0, amount: 0 },
         exceptions: { count: 0, amount: 0 },
-        status: "no_data",
+        status: "no_reconciliation_run",
       });
     } finally {
       setLoading(false);
