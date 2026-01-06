@@ -246,43 +246,36 @@ class UPIReconciliationEngine:
         """
         logger.info("Step 4: Detecting double debits/credits with proper TTUM handling")
 
-        # Find same RRN with multiple debit/credit entries
-        # Mark entire set as unmatched for manual review
-        double_entries = []
-
         for df_name, df in [('CBS', self.cbs_df), ('Switch', self.switch_df)]:
             if 'RRN' in df.columns and not df['processed'].all():
                 rrn_groups = df[~df['processed']].groupby('RRN')
                 for rrn, group in rrn_groups:
-                    if len(group) > 1 and pd.notna(rrn) and rrn != '':  # Multiple entries for same RRN
-                        # Check if they have opposite Dr/Cr indicators (key indicator of double entry)
+                    if len(group) > 1 and pd.notna(rrn) and rrn != '':
+                        # First, check for self-reversal, which should be matched
+                        if len(group) == 2:
+                            dr_cr_values = group['Dr_Cr'].fillna('').astype(str).str.upper().unique()
+                            if len(dr_cr_values) == 2:
+                                df.loc[group.index, 'processed'] = True
+                                df.loc[group.index, 'match_status'] = 'MATCHED'
+                                df.loc[group.index, 'exception_type'] = 'SELF_MATCHED'
+                                continue
+
+                        # If not a self-reversal, it is a double debit/credit
                         dr_cr_values = group['Dr_Cr'].fillna('').astype(str).str.upper()
                         has_dr = any(v.startswith('D') for v in dr_cr_values)
                         has_cr = any(v.startswith('C') for v in dr_cr_values)
                         
-                        # Mark all entries as unmatched for manual review
                         df.loc[group.index, 'processed'] = True
                         df.loc[group.index, 'match_status'] = 'UNMATCHED'
                         df.loc[group.index, 'exception_type'] = 'DOUBLE_DEBIT_CREDIT'
                         df.loc[group.index, 'ttum_required'] = True
                         
-                        # Determine TTUM type based on characteristics
                         if has_dr and has_cr:
-                            # Opposite entries - likely needs reversal
                             df.loc[group.index, 'ttum_type'] = 'REVERSAL'
                         else:
-                            # Same Dr/Cr multiple times - needs investigation
                             df.loc[group.index, 'ttum_type'] = 'INVESTIGATION'
                         
-                        double_entries.extend(group.to_dict('records'))
-                        
                         logger.info(f"Detected {len(group)} double debit/credit entries for RRN: {rrn} in {df_name}")
-
-        logger.info(f"Found {len(double_entries)} double debit/credit entries requiring TTUM")
-        
-        # Log summary for audit trail
-        if double_entries:
-            logger.warning(f"⚠️ {len(double_entries)} transactions need TTUM generation due to double debit/credit")
 
     def _step_5_normal_matching(self):
         """Step 5: Normal matching with configurable parameters"""

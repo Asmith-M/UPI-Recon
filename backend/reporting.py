@@ -68,8 +68,8 @@ def write_report(run_id: str, cycle_id: Optional[str], subdir: str, filename: st
 
     out_path = os.path.join(base, filename)
 
-    # Write CSV with exact header order
-    with open(out_path, 'w', newline='', encoding='utf-8') as f:
+    # Write CSV with exact header order and UTF-8 BOM for Excel compatibility
+    with open(out_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         for r in rows:
@@ -171,8 +171,8 @@ def write_ttum_csv(run_id: str, cycle_id: Optional[str], filename: str, headers:
     
     out_path = os.path.join(base, f"{filename}.csv")
     
-    # Write CSV with exact header order
-    with open(out_path, 'w', newline='', encoding='utf-8') as f:
+    # Write CSV with exact header order and UTF-8 BOM for Excel compatibility
+    with open(out_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         for row_data in rows:
@@ -238,7 +238,7 @@ def write_ttum_pandas(run_id: str, cycle_id: Optional[str], filename: str, heade
                 worksheet.column_dimensions[column_letter].width = adjusted_width
     else:  # csv
         out_path = os.path.join(base, f"{filename}.csv")
-        df.to_csv(out_path, index=False, encoding='utf-8')
+        df.to_csv(out_path, index=False, encoding='utf-8-sig')
     
     return out_path
 
@@ -254,24 +254,26 @@ def get_ttum_files(run_id: str, cycle_id: Optional[str] = None, format: str = 'a
     Returns:
         List of file paths
     """
-    ttum_dir = os.path.join(OUTPUT_DIR, run_id, 'ttum')
-    if cycle_id:
-        ttum_dir = os.path.join(ttum_dir, f"cycle_{cycle_id}")
+    files = set()
+    for subdir in ['ttum', 'reports']:
+        base_dir = os.path.join(OUTPUT_DIR, run_id, subdir)
+        if cycle_id:
+            base_dir = os.path.join(base_dir, f"cycle_{cycle_id}")
+        
+        if not os.path.exists(base_dir):
+            continue
+        
+        for filename in os.listdir(base_dir):
+            if any(keyword in filename for keyword in ['ttum', 'unmatched', 'exceptions']):
+                filepath = os.path.join(base_dir, filename)
+                if os.path.isfile(filepath):
+                    if format == 'all':
+                        files.add(filepath)
+                    elif format == 'csv' and filename.endswith('.csv'):
+                        files.add(filepath)
+                    elif format == 'xlsx' and filename.endswith('.xlsx'):
+                        files.add(filepath)
+                    elif format == 'json' and filename.endswith('.json'):
+                        files.add(filepath)
     
-    if not os.path.exists(ttum_dir):
-        return []
-    
-    files = []
-    for filename in os.listdir(ttum_dir):
-        filepath = os.path.join(ttum_dir, filename)
-        if os.path.isfile(filepath):
-            if format == 'all':
-                files.append(filepath)
-            elif format == 'csv' and filename.endswith('.csv'):
-                files.append(filepath)
-            elif format == 'xlsx' and filename.endswith('.xlsx'):
-                files.append(filepath)
-            elif format == 'json' and filename.endswith('.json'):
-                files.append(filepath)
-    
-    return sorted(files)
+    return sorted(list(files))

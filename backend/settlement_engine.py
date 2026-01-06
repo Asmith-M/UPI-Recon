@@ -13,7 +13,7 @@ from logging_config import get_logger
 
 logger = get_logger(__name__)
 from annexure_iv import generate_annexure_iv_csv
-from reporting import write_report
+from reporting import write_report, write_ttum_xlsx
 
 
 class VoucherType(Enum):
@@ -781,6 +781,7 @@ class SettlementEngine:
                 try:
                     outp = write_report(run_id, cycle_id, 'ttum', f"{cat.lower()}.csv", headers, rows_for_cat)
                     created[cat] = outp
+                    write_ttum_xlsx(run_id, cycle_id, f"{cat.lower()}", headers, rows_for_cat)
                 except Exception:
                     # fallback: write directly into ttum_dir
                     path = os.path.join(ttum_dir, f"{cat.lower()}.csv")

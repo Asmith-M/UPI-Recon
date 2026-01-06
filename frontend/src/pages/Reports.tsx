@@ -4,6 +4,7 @@ import { Button } from "../components/ui/button";
 import { FileText, Download, Loader2 } from "lucide-react";
 import { apiClient } from "../lib/api";
 import { useToast } from "../hooks/use-toast";
+import { AxiosResponse } from "axios";
 
 interface ReportType {
   id: string;
@@ -82,6 +83,28 @@ const reportTypes: ReportType[] = [
   },
 ];
 
+const downloadFile = (response: AxiosResponse<Blob>, defaultFilename: string) => {
+  const blob = response.data;
+  const contentDisposition = response.headers['content-disposition'];
+  let filename = defaultFilename;
+
+  if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
+      if (filenameMatch && filenameMatch.length > 1) {
+          filename = filenameMatch[1];
+      }
+  }
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+}
+
 export default function Reports() {
   const { toast } = useToast();
   const [loadingReports, setLoadingReports] = useState<Record<string, boolean>>({});
@@ -90,108 +113,10 @@ export default function Reports() {
     try {
       setLoadingReports(prev => ({ ...prev, [report.id]: true }));
 
-      // Determine file type and download accordingly
-      if (report.id === "adjustments") {
-        // Download CSV file
-        const blob = await apiClient.downloadLatestAdjustments();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'adjustments.csv';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-
-        toast({
-          title: "Success",
-          description: "Adjustments CSV downloaded successfully"
-        });
-      } else if (report.id === "report") {
-        // Download text report
-        const blob = await apiClient.downloadLatestReport();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'reconciliation_report.txt';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-
-        toast({
-          title: "Success",
-          description: "Report downloaded successfully"
-        });
-      } else if (report.endpoint.includes('/csv')) {
-        // Download CSV report
-        const blob = await apiClient.downloadReport(report.endpoint);
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${report.id}.csv`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-
-        toast({
-          title: "Success",
-          description: `${report.name} downloaded successfully`
-        });
-      } else if (report.endpoint.includes('/xlsx')) {
-        // Download XLSX report
-        const blob = await apiClient.downloadReport(report.endpoint);
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${report.id}.xlsx`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-
-        toast({
-          title: "Success",
-          description: `${report.name} downloaded successfully`
-        });
-      } else if (report.endpoint === 'ttum') {
-        // Download TTUM ZIP
-        const blob = await apiClient.downloadReport(report.endpoint);
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'ttum_report.zip';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-
-        toast({
-          title: "Success",
-          description: "TTUM ZIP downloaded successfully"
-        });
-      } else if (report.endpoint === 'matched') {
-        // Download Matched Reports ZIP
-        const blob = await apiClient.downloadReport(report.endpoint);
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'matched_reports.zip';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-
-        toast({
-          title: "Success",
-          description: "Matched reports ZIP downloaded successfully"
-        });
-      } else {
-        // Get JSON report data
+      // Handle JSON reports separately
+      if (!report.endpoint.includes('/') && !['ttum', 'report', 'adjustments'].includes(report.id)) {
         const data = await apiClient.getReport(report.endpoint);
         
-        // Convert to JSON and download
         const jsonStr = JSON.stringify(data, null, 2);
         const blob = new Blob([jsonStr], { type: 'application/json' });
         const url = window.URL.createObjectURL(blob);
@@ -202,12 +127,31 @@ export default function Reports() {
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
+      } else {
+        // Handle file downloads
+        let response: AxiosResponse<Blob>;
+        let defaultFilename = 'download';
 
-        toast({
-          title: "Success",
-          description: `${report.name} downloaded successfully`
-        });
+        if (report.id === "adjustments") {
+          response = await apiClient.downloadLatestAdjustments();
+          defaultFilename = 'adjustments.csv';
+        } else if (report.id === "report") {
+          response = await apiClient.downloadLatestReport();
+          defaultFilename = 'reconciliation_report.txt';
+        } else {
+          response = await apiClient.downloadReport(report.endpoint);
+          const extension = report.endpoint.split('/').pop();
+          defaultFilename = `${report.id}.${extension}`;
+        }
+        
+        downloadFile(response, defaultFilename);
       }
+
+      toast({
+        title: "Success",
+        description: `${report.name} downloaded successfully`
+      });
+
     } catch (error: any) {
       toast({
         title: "Error",

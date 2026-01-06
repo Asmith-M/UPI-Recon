@@ -276,20 +276,54 @@ async def get_summary(user: dict = Depends(get_current_user)):
             
             # Transform UPI recon output to summary format
             summary_data = recon_data.get('summary', {})
+            exceptions = recon_data.get('exceptions', [])
+
+            # Calculate inflow/outflow amounts and counts
+            inflow_amount = 0
+            inflow_count = 0
+            outflow_amount = 0
+            outflow_count = 0
+
+            # Calculate from exceptions (unmatched transactions)
+            for exc in exceptions:
+                amount = float(exc.get('amount', 0))
+                dr_cr = str(exc.get('debit_credit', '')).strip().upper()
+                if dr_cr.startswith('C'):  # Credit = Inflow
+                    inflow_amount += amount
+                    inflow_count += 1
+                elif dr_cr.startswith('D'):  # Debit = Outflow
+                    outflow_amount += amount
+                    outflow_count += 1
+
+            # Note: For matched transactions, we don't have individual transaction data in summary
+            # so we can't calculate their inflow/outflow. This is a limitation of the current summary format.
+
+            total_count = summary_data.get('total_cbs', 0) + summary_data.get('total_switch', 0) + summary_data.get('total_npci', 0)
+            matched_count = summary_data.get('matched_cbs', 0) + summary_data.get('matched_switch', 0) + summary_data.get('matched_npci', 0)
+            unmatched_count = len(exceptions)
+
             return {
                 "run_id": latest,
                 "status": "completed",
                 "totals": {
-                    "count": summary_data.get('total_cbs', 0) + summary_data.get('total_switch', 0) + summary_data.get('total_npci', 0),
-                    "amount": 0
+                    "count": total_count,
+                    "amount": 0  # Total amount not available in summary
                 },
                 "matched": {
-                    "count": summary_data.get('matched_cbs', 0) + summary_data.get('matched_switch', 0) + summary_data.get('matched_npci', 0),
-                    "amount": 0
+                    "count": matched_count,
+                    "amount": 0  # Matched amount not available in summary
                 },
                 "unmatched": {
-                    "count": len(recon_data.get('exceptions', [])),
-                    "amount": 0
+                    "count": unmatched_count,
+                    "amount": 0  # Unmatched amount not available in summary
+                },
+                "inflow": {
+                    "count": inflow_count,
+                    "amount": inflow_amount
+                },
+                "outflow": {
+                    "count": outflow_count,
+                    "amount": outflow_amount
                 },
                 "breakdown": {
                     "cbs": {

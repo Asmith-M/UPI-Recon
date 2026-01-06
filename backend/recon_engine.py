@@ -580,10 +580,12 @@ class ReconciliationEngine:
             
             if matched_rows:
                 df_matched = pd.DataFrame(matched_rows)
-                matched_path = os.path.join(reports_dir, 'matched_transactions.csv')
-                df_matched.to_csv(matched_path, index=False, encoding='utf-8')
-                logger.info(f"✅ Generated matched transactions report: {matched_path}")
-                assert os.path.exists(matched_path), f"Failed to create {matched_path}"
+                matched_path_csv = os.path.join(reports_dir, 'matched_transactions.csv')
+                matched_path_xlsx = os.path.join(reports_dir, 'matched_transactions.xlsx')
+                df_matched.to_csv(matched_path_csv, index=False, encoding='utf-8')
+                df_matched.to_excel(matched_path_xlsx, index=False, engine='openpyxl')
+                logger.info(f"✅ Generated matched transactions reports: {matched_path_csv} and {matched_path_xlsx}")
+                assert os.path.exists(matched_path_csv), f"Failed to create {matched_path_csv}"
             else:
                 logger.info("No matched transactions to report")
             
@@ -601,10 +603,12 @@ class ReconciliationEngine:
                 cols_present = [c for c in cols_to_keep if c in df_exceptions.columns]
                 df_exceptions = df_exceptions[cols_present]
                 
-                exceptions_path = os.path.join(reports_dir, 'unmatched_exceptions.csv')
-                df_exceptions.to_csv(exceptions_path, index=False, encoding='utf-8')
-                logger.info(f"✅ Generated exceptions report: {exceptions_path} ({len(exceptions)} records)")
-                assert os.path.exists(exceptions_path), f"Failed to create {exceptions_path}"
+                exceptions_path_csv = os.path.join(reports_dir, 'unmatched_exceptions.csv')
+                exceptions_path_xlsx = os.path.join(reports_dir, 'unmatched_exceptions.xlsx')
+                df_exceptions.to_csv(exceptions_path_csv, index=False, encoding='utf-8')
+                df_exceptions.to_excel(exceptions_path_xlsx, index=False, engine='openpyxl')
+                logger.info(f"✅ Generated exceptions reports: {exceptions_path_csv} and {exceptions_path_xlsx} ({len(exceptions)} records)")
+                assert os.path.exists(exceptions_path_csv), f"Failed to create {exceptions_path_csv}"
             else:
                 logger.info("No exceptions to report")
             
@@ -616,10 +620,12 @@ class ReconciliationEngine:
                     if col not in df_ttum.columns:
                         df_ttum[col] = ''
                 
-                ttum_path = os.path.join(reports_dir, 'ttum_candidates.csv')
-                df_ttum.to_csv(ttum_path, index=False, encoding='utf-8')
-                logger.info(f"✅ Generated TTUM candidates report: {ttum_path} ({len(ttum_candidates)} records)")
-                assert os.path.exists(ttum_path), f"Failed to create {ttum_path}"
+                ttum_path_csv = os.path.join(reports_dir, 'ttum_candidates.csv')
+                ttum_path_xlsx = os.path.join(reports_dir, 'ttum_candidates.xlsx')
+                df_ttum.to_csv(ttum_path_csv, index=False, encoding='utf-8')
+                df_ttum.to_excel(ttum_path_xlsx, index=False, engine='openpyxl')
+                logger.info(f"✅ Generated TTUM candidates reports: {ttum_path_csv} and {ttum_path_xlsx} ({len(ttum_candidates)} records)")
+                assert os.path.exists(ttum_path_csv), f"Failed to create {ttum_path_csv}"
             else:
                 logger.info("No TTUM candidates to report")
             

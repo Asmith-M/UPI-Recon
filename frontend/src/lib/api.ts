@@ -259,25 +259,25 @@ export const apiClient = {
   },
 
   // File Downloads
-  downloadLatestReport: async (): Promise<Blob> => {
+  downloadLatestReport: async (): Promise<AxiosResponse<Blob>> => {
     const response: AxiosResponse<Blob> = await api.get('/api/v1/recon/latest/report', {
       responseType: 'blob',
     });
-    return response.data;
+    return response;
   },
 
-  downloadLatestAdjustments: async (): Promise<Blob> => {
+  downloadLatestAdjustments: async (): Promise<AxiosResponse<Blob>> => {
     const response: AxiosResponse<Blob> = await api.get('/api/v1/recon/latest/adjustments', {
       responseType: 'blob',
     });
-    return response.data;
+    return response;
   },
 
-  downloadReport: async (endpoint: string): Promise<Blob> => {
+  downloadReport: async (endpoint: string): Promise<AxiosResponse<Blob>> => {
     const response: AxiosResponse<Blob> = await api.get(`/api/v1/reports/${endpoint}`, {
       responseType: 'blob',
     });
-    return response.data;
+    return response;
   },
 
   // Rollback Operations (Phase 3)

@@ -55,7 +55,7 @@ export default function Unmatched() {
     const npci: any[] = [];
     const cbs: any[] = [];
 
-    if (!data) {
+    if (!data || (Array.isArray(data) && data.length === 0)) {
       console.warn("No data provided for unmatched transformation");
       return { npci, cbs };
     }
@@ -69,7 +69,7 @@ export default function Unmatched() {
 
         const transaction = {
           source: exc.source || 'NPCI',
-          rrn: exc.rrn || 'unknown',
+          rrn: exc.rrn || exc.RRN || 'unknown',
           drCr: exc.debit_credit || exc.dr_cr || 'Dr',
           amount: parseFloat(exc.amount) || 0,
           amountFormatted: `₹${(parseFloat(exc.amount) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
@@ -96,88 +96,88 @@ export default function Unmatched() {
       console.log(`Transformed UPI array format - NPCI: ${npci.length}, CBS: ${cbs.length}`);
       return { npci, cbs };
     }
+    // Handle legacy object format
+    else if (typeof data === 'object' && !Array.isArray(data)) {
+      // Convert object to array format
+      const records = Object.entries(data).map(([rrn, record]) => ({
+        rrn,
+        ...(record && typeof record === 'object' ? record : {})
+      }));
 
-    // Handle legacy object format (backward compatibility)
-    if (typeof data !== 'object' || Array.isArray(data)) {
+      records.forEach((record: any) => {
+        if (!record) return;
+
+        const rrn = record.rrn || record.RRN || 'unknown';
+
+        // Extract data from each source - handle multiple naming conventions
+        const cbs_data = record.cbs || record.CBS || record.gl;
+        const switch_data = record.switch || record.SWITCH;
+        const npci_data = record.npci || record.NPCI;
+
+        // Helper to create transaction object
+        const createTransaction = (sourceData: any, sourceName: string) => {
+          if (!sourceData) return null;
+
+          const amount = parseFloat(sourceData.amount) || 0;
+          const drCr = sourceData.dr_cr || sourceData.debit_credit || sourceData.debit || "Dr";
+          
+          // Determine direction
+          let direction = 'UNKNOWN';
+          if (drCr) {
+            const drCrUpper = String(drCr).toUpperCase();
+            direction = drCrUpper.startsWith('C') ? 'INWARD' : drCrUpper.startsWith('D') ? 'OUTWARD' : 'UNKNOWN';
+          }
+
+          return {
+            source: sourceName,
+            rrn: rrn,
+            drCr: drCr,
+            amount: amount,
+            amountFormatted: `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            tranDate: sourceData.date || sourceData.tran_date || sourceData.transaction_date || new Date().toLocaleDateString(),
+            rc: sourceData.rc || sourceData.response_code || "00",
+            type: sourceData.tran_type || sourceData.type || "UPI",
+            direction: direction
+          };
+        };
+
+        // Determine which system is missing
+        const hasCBS = cbs_data !== null && cbs_data !== undefined;
+        const hasSwitch = switch_data !== null && switch_data !== undefined;
+        const hasNPCI = npci_data !== null && npci_data !== undefined;
+
+        // Add to NPCI list if NPCI data exists but CBS is missing
+        if (hasNPCI && !hasCBS) {
+          const transaction = createTransaction(npci_data, "NPCI");
+          if (transaction) npci.push(transaction);
+        }
+
+        // Add to CBS list if CBS data exists but NPCI is missing
+        if (hasCBS && !hasNPCI) {
+          const transaction = createTransaction(cbs_data, "CBS");
+          if (transaction) cbs.push(transaction);
+        }
+
+        // Also add if it's a mismatch or partial match
+        if (record.status === 'PARTIAL_MATCH' || record.status === 'MISMATCH' || record.status === 'ORPHAN' || record.status === 'PARTIAL_MISMATCH') {
+          if (hasNPCI) {
+            const transaction = createTransaction(npci_data, "NPCI");
+            if (transaction && !npci.some(t => t.rrn === rrn)) npci.push(transaction);
+          }
+          if (hasCBS) {
+            const transaction = createTransaction(cbs_data, "CBS");
+            if (transaction && !cbs.some(t => t.rrn === rrn)) cbs.push(transaction);
+          }
+        }
+      });
+
+      console.log(`Transformed legacy format - NPCI: ${npci.length}, CBS: ${cbs.length}`);
+      return { npci, cbs };
+    }
+    else {
       console.warn("Invalid data format for unmatched transformation:", data);
       return { npci, cbs };
     }
-
-    // Convert object to array format
-    const records = Object.entries(data).map(([rrn, record]) => ({
-      rrn,
-      ...(record && typeof record === 'object' ? record : {})
-    }));
-
-    records.forEach((record: any) => {
-      if (!record) return;
-
-      const rrn = record.rrn || record.RRN || 'unknown';
-
-      // Extract data from each source - handle multiple naming conventions
-      const cbs_data = record.cbs || record.CBS || record.gl;
-      const switch_data = record.switch || record.SWITCH;
-      const npci_data = record.npci || record.NPCI;
-
-      // Helper to create transaction object
-      const createTransaction = (sourceData: any, sourceName: string) => {
-        if (!sourceData) return null;
-
-        const amount = parseFloat(sourceData.amount) || 0;
-        const drCr = sourceData.dr_cr || sourceData.debit_credit || sourceData.debit || "Dr";
-        
-        // Determine direction
-        let direction = 'UNKNOWN';
-        if (drCr) {
-          const drCrUpper = String(drCr).toUpperCase();
-          direction = drCrUpper.startsWith('C') ? 'INWARD' : drCrUpper.startsWith('D') ? 'OUTWARD' : 'UNKNOWN';
-        }
-
-        return {
-          source: sourceName,
-          rrn: rrn,
-          drCr: drCr,
-          amount: amount,
-          amountFormatted: `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-          tranDate: sourceData.date || sourceData.tran_date || sourceData.transaction_date || new Date().toLocaleDateString(),
-          rc: sourceData.rc || sourceData.response_code || "00",
-          type: sourceData.tran_type || sourceData.type || "UPI",
-          direction: direction
-        };
-      };
-
-      // Determine which system is missing
-      const hasCBS = cbs_data !== null && cbs_data !== undefined;
-      const hasSwitch = switch_data !== null && switch_data !== undefined;
-      const hasNPCI = npci_data !== null && npci_data !== undefined;
-
-      // Add to NPCI list if NPCI data exists but CBS is missing
-      if (hasNPCI && !hasCBS) {
-        const transaction = createTransaction(npci_data, "NPCI");
-        if (transaction) npci.push(transaction);
-      }
-
-      // Add to CBS list if CBS data exists but NPCI is missing
-      if (hasCBS && !hasNPCI) {
-        const transaction = createTransaction(cbs_data, "CBS");
-        if (transaction) cbs.push(transaction);
-      }
-
-      // Also add if it's a mismatch or partial match
-      if (record.status === 'PARTIAL_MATCH' || record.status === 'MISMATCH' || record.status === 'ORPHAN' || record.status === 'PARTIAL_MISMATCH') {
-        if (hasNPCI) {
-          const transaction = createTransaction(npci_data, "NPCI");
-          if (transaction && !npci.some(t => t.rrn === rrn)) npci.push(transaction);
-        }
-        if (hasCBS) {
-          const transaction = createTransaction(cbs_data, "CBS");
-          if (transaction && !cbs.some(t => t.rrn === rrn)) cbs.push(transaction);
-        }
-      }
-    });
-
-    console.log(`Transformed legacy format - NPCI: ${npci.length}, CBS: ${cbs.length}`);
-    return { npci, cbs };
   };
 
   // Helper function to parse and format dates for comparison
