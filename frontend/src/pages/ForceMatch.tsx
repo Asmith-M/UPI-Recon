@@ -129,43 +129,39 @@ const forceMatchReducer = (state: ForceMatchState, action: ForceMatchAction): Fo
 };
 
 const transformRawDataToTransactions = (rawData: any): Transaction[] => {
-  return Object.entries(rawData.data).map(([rrn, record]: [string, any]) => {
-    const cbs = record.cbs ? {
-      rrn: record.cbs.rrn || rrn,
-      amount: record.cbs.amount || 0,
-      date: record.cbs.date || '-',
-      time: record.cbs.time,
-      description: record.cbs.description,
-      reference: record.cbs.reference,
-      debit_credit: record.cbs.debit_credit
-    } : undefined;
+  if (!rawData || !rawData.data) return [];
 
-    const switchTxn = record.switch ? {
-      rrn: record.switch.rrn || rrn,
-      amount: record.switch.amount || 0,
-      date: record.switch.date || '-',
-      time: record.switch.time,
-      description: record.switch.description,
-      reference: record.switch.reference,
-      debit_credit: record.switch.debit_credit
-    } : undefined;
+  return Object.entries(rawData.data).map(([key, record]: [string, any]) => {
+    // Use RRN from record data if available, otherwise use the key
+    const rrn = record?.rrn || key;
+    
+    const createDetail = (sourceData: any): TransactionDetail | undefined => {
+      if (!sourceData) return undefined;
 
-    const npci = record.npci ? {
-      rrn: record.npci.rrn || rrn,
-      amount: record.npci.amount || 0,
-      date: record.npci.date || '-',
-      time: record.npci.time,
-      description: record.npci.description,
-      reference: record.npci.reference,
-      debit_credit: record.npci.debit_credit
-    } : undefined;
+      return {
+        rrn: sourceData.rrn || rrn,
+        amount: parseFloat(sourceData.amount) || 0,
+        date: sourceData.date || sourceData.tran_date || '-',
+        time: sourceData.time,
+        description: sourceData.description,
+        reference: sourceData.reference || sourceData.upi_tran_id,
+        debit_credit: sourceData.debit_credit || sourceData.dr_cr,
+        status: sourceData.status
+      };
+    };
 
-    const amounts = [cbs?.amount, switchTxn?.amount, npci?.amount].filter(a => a !== undefined);
+    const cbs = createDetail(record.cbs);
+    const switchTxn = createDetail(record.switch);
+    const npci = createDetail(record.npci);
+
+    // Calculate zero difference
+    const amounts = [cbs?.amount, switchTxn?.amount, npci?.amount]
+      .filter(a => a !== undefined && a !== null && !isNaN(a));
     const zeroDiff = amounts.length > 1 && amounts.every(a => a === amounts[0]);
 
     return {
       rrn,
-      status: record.status,
+      status: record.status || 'ORPHAN',
       cbs,
       switch: switchTxn,
       npci,
@@ -484,13 +480,19 @@ export default function ForceMatch() {
                         {transaction.npci ? <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" /> : <AlertCircle className="w-4 h-4 text-red-500 mx-auto" />}
                       </td>
                       <td className="p-3 font-semibold">
-                        {transaction.cbs ? `₹${transaction.cbs.amount.toLocaleString()}` : '-'}
+                        {transaction.cbs?.amount !== undefined && transaction.cbs?.amount !== null
+                          ? `₹${transaction.cbs.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : '-'}
                       </td>
                       <td className="p-3 font-semibold">
-                        {transaction.switch ? `₹${transaction.switch.amount.toLocaleString()}` : '-'}
+                        {transaction.switch?.amount !== undefined && transaction.switch?.amount !== null
+                          ? `₹${transaction.switch.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : '-'}
                       </td>
                       <td className="p-3 font-semibold">
-                        {transaction.npci ? `₹${transaction.npci.amount.toLocaleString()}` : '-'}
+                        {transaction.npci?.amount !== undefined && transaction.npci?.amount !== null
+                          ? `₹${transaction.npci.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : '-'}
                       </td>
                       <td className="p-3">
                         {transaction.zero_difference ? (

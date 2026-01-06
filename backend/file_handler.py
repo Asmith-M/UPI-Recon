@@ -186,21 +186,22 @@ class FileHandler:
         """Enhanced column mapping for UPI files with additional fields"""
         renamed_df = df.copy()
 
-        # Extended column definitions for UPI files
+        # Extended column definitions for UPI files - prioritized by likelihood
         upi_column_definitions = {
             'UPI_Tran_ID': ['upi_tran_id', 'upi id', 'upi_transaction_id', 'upi_txn_id', 'upi_txn',
                            'transaction_ref', 'transaction_ref_no', 'customer reference number', 'transaction_id', 'transaction id'],
             'RRN': ['rrn', 'reference number', 'ref number', 'reference', 'ref',
-                   'transaction id', 'txn id', 'transaction_id', 'txn_id', 'id',
                    'unique id', 'unique_id', 'reference_no', 'ref_no', 'system trace audit number'],
             'Amount': ['amount', 'amt', 'tran amount', 'transaction amount',
-                      'tran_amt', 'transaction_amt', 'value', 'amt', 'amount_inr',
+                      'tran_amt', 'transaction_amt', 'value', 'amount_inr',
                       'tran_value', 'transaction_value', 'principal', 'principal_amount',
-                      'transaction amount', 'actual transaction amount'],
+                      'actual transaction amount'],
             'Tran_Date': ['date', 'tran date', 'transaction date', 'tran_date',
                          'transaction_date', 'trn date', 'trn_date', 'dt',
                          'trans_date', 'transaction_dt', 'date_time', 'datetime',
                          'tran_datetime', 'transaction_datetime', 'card acceptor settl date'],
+            'Time': ['time', 'tran time', 'transaction time', 'tran_time', 'transaction_time',
+                    'trn time', 'trn_time', 'transaction_time', 'tran_datetime'],
             'Dr_Cr': ['dr_cr', 'd/c', 'dr/cr', 'debit_credit', 'debit/credit',
                      'type', 'transaction_type', 'tran_type', 'txn_type', 'mode',
                      'credit_debit', 'c/d', 'cd'],
@@ -209,12 +210,14 @@ class FileHandler:
             'Tran_Type': ['type', 'tran type', 'transaction type', 'tran_type',
                          'transaction_type', 'mode', 'payment type', 'payment_type',
                          'transaction_mode', 'payment_mode', 'service', 'service_type'],
-            'Beneficiary_Number': ['beneficiary number', 'beneficiary', 'bene_number', 'bene num'],
-            'Remitter_Number': ['remitter number', 'remitter', 'remit_number', 'remit num'],
-            'Payer_PSP': ['payer psp', 'payer_psp', 'payer psp code', 'remitter psp'],
-            'Payee_PSP': ['payee psp', 'payee_psp', 'payee psp code', 'beneficiary psp'],
+            'Reference_ID': ['reference_id', 'reference id', 'ref_id', 'upi_tran_id', 'transaction_ref'],
+            'Description': ['description', 'narration', 'remarks', 'notes', 'comments', 'reference_text'],
+            'Beneficiary_Number': ['beneficiary number', 'beneficiary', 'bene_number', 'bene num', 'benef_acc'],
+            'Remitter_Number': ['remitter number', 'remitter', 'remit_number', 'remit num', 'remit_acc'],
+            'Payer_PSP': ['payer psp', 'payer_psp', 'payer psp code', 'remitter psp', 'payer_code'],
+            'Payee_PSP': ['payee psp', 'payee_psp', 'payee psp code', 'beneficiary psp', 'payee_code'],
             'MCC': ['mcc', 'merchant category code'],
-            'Originating_Channel': ['originating channel', 'channel', 'otp indicator']
+            'Originating_Channel': ['originating channel', 'channel', 'otp indicator', 'originating_channel']
         }
 
         # Create standard columns
@@ -224,12 +227,21 @@ class FileHandler:
             if found_col:
                 renamed_df[standard_col] = df[found_col]
             else:
-                renamed_df[standard_col] = None
+                # Create empty column if not found - will be populated or remain empty
+                renamed_df[standard_col] = pd.NA
+
+        # Preserve original columns for reference
+        # Keep the original columns alongside mapped ones
+        original_cols = set(df.columns)
+        mapped_cols = set(upi_column_definitions.keys())
+        for col in original_cols - mapped_cols:
+            if col not in renamed_df.columns:
+                renamed_df[col] = df[col]
 
         return renamed_df
 
     def _validate_upi_file_content(self, df_mapped: pd.DataFrame, filename: str, file_type: str) -> (bool, str):
-        """UPI-specific file content validation"""
+        """UPI-specific file content validation with enhanced RRN validation"""
 
         # Basic required fields validation
         base_required = ['RRN', 'Amount', 'Tran_Date']
@@ -240,6 +252,22 @@ class FileHandler:
 
         if missing:
             return False, f'Missing required columns: {missing}'
+
+        # RRN validation - ensure RRN is distinct and not just UPI_Tran_ID
+        # RRN should be a numeric or alphanumeric code, typically different from UPI_Tran_ID
+        rrn_col = df_mapped['RRN']
+        if rrn_col.dtype == 'object':
+            rrn_values = rrn_col.astype(str).str.strip()
+            # Check if RRN values are non-empty
+            if (rrn_values == '').any():
+                logger.warning('Some RRN values are empty; these transactions may be unmatched')
+            # Check for duplicate RRN patterns across too many rows (indicator of mapping error)
+            rrn_counts = rrn_values.value_counts()
+            if len(rrn_counts) > 0:
+                # If one value appears in more than 50% of rows, likely mapping error
+                max_count_pct = (rrn_counts.iloc[0] / len(rrn_values)) * 100
+                if max_count_pct > 50:
+                    logger.warning(f'RRN "{rrn_counts.index[0]}" appears in {max_count_pct:.1f}% of rows; may indicate column mapping issue')
 
         # Amount validation - must be > 0 for financial transactions
         try:

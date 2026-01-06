@@ -36,49 +36,42 @@ export default function ViewStatus() {
   const fetchUploadStatus = async () => {
     try {
       setLoading(true);
-      
-      // Try to get upload metadata first to see which files were actually uploaded
       const metadata = await apiClient.getUploadMetadata();
-      const uploadedFiles = metadata.uploaded_files || [];
-      
-      // Transform the uploaded files list into the status display
-      const transformedData = transformRawDataToUploadStatus(uploadedFiles);
-      setUploadStatusData(transformedData);
+
+      console.log("Metadata response:", metadata);
+
+      if (metadata.status === 'success' && metadata.uploaded_files && metadata.uploaded_files.length > 0) {
+        const transformedData = transformRawDataToUploadStatus(metadata.uploaded_files);
+        setUploadStatusData(transformedData);
+      } else {
+        // Show empty state with proper structure
+        setUploadStatusData(transformRawDataToUploadStatus([]));
+      }
     } catch (error: any) {
-      // If no metadata yet, show empty state with proper structure
-      console.log("No upload metadata yet:", error.message);
-      setUploadStatusData([
-        {
-          section: "CBS/ GL File",
-          files: [
-            { name: "CBS Inward File", required: 1, uploaded: 0, success: 0, error: 0, errorDetails: null },
-            { name: "CBS Outward File", required: 1, uploaded: 0, success: 0, error: 0, errorDetails: null },
-            { name: "Switch File", required: 1, uploaded: 0, success: 0, error: 0, errorDetails: null },
-          ],
-        },
-        {
-          section: "NPCI Files",
-          files: [
-            { name: "NPCI Inward Raw", required: 1, uploaded: 0, success: 0, error: 0, errorDetails: null },
-            { name: "NPCI Outward Raw", required: 1, uploaded: 0, success: 0, error: 0, errorDetails: null },
-          ],
-        },
-        {
-          section: "Other Files",
-          files: [
-            { name: "NTSL", required: 1, uploaded: 0, success: 0, error: 0, errorDetails: null },
-            { name: "Adjustment File", required: 0, uploaded: 0, success: 0, error: 0, errorDetails: null },
-          ],
-        },
-      ]);
+      console.error("Error fetching upload status:", error);
+      // Show empty state
+      setUploadStatusData(transformRawDataToUploadStatus([]));
     } finally {
       setLoading(false);
     }
   };
 
   const transformRawDataToUploadStatus = (uploadedFiles: string[]) => {
-    // Check which files were actually uploaded by looking at the uploaded_files array
-    const has = (fileType: string) => uploadedFiles.includes(fileType) ? 1 : 0;
+    // Handle both array format (uploaded_files) and object format (saved_files)
+    let fileList: string[] = [];
+
+    if (Array.isArray(uploadedFiles)) {
+      fileList = uploadedFiles;
+    } else if (typeof uploadedFiles === 'object' && uploadedFiles !== null) {
+      // Handle saved_files object format
+      fileList = Object.keys(uploadedFiles);
+    }
+
+    // Check which files were actually uploaded by looking at the file list
+    const has = (fileType: string) => {
+      const normalizedType = fileType.toLowerCase().replace('_', '');
+      return fileList.some(file => file.toLowerCase().includes(normalizedType)) ? 1 : 0;
+    };
 
     return [
       {

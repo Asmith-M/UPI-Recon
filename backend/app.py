@@ -541,7 +541,7 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
         #     raise
 
         run_id = run_request.run_id
-        
+
         # If run_id not provided, use the latest run
         if not run_id:
             runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
@@ -549,7 +549,7 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
                 raise HTTPException(status_code=404, detail="No runs found")
             run_id = sorted(runs)[-1]  # Get latest run
             logger.info(f"Using latest run: {run_id}")
-        
+
         run_root = os.path.join(UPLOAD_DIR, run_id)
 
         if not os.path.isdir(run_root):
@@ -580,7 +580,7 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
             # Extract UPI-specific dataframes
             cbs_df, switch_df, npci_df = _extract_upi_dataframes(dataframes)
             results = upi_recon_engine.perform_upi_reconciliation(cbs_df, switch_df, npci_df, run_id)
-            
+
             # UPI engine outputs structured data - save it to OUTPUT_DIR
             try:
                 import json
@@ -590,12 +590,19 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
                 with open(recon_output_path, 'w', encoding='utf-8') as f:
                     json.dump(results, f, indent=2, default=str)
                 logger.info(f"UPI reconciliation results saved to {recon_output_path}")
+                
+                # Generate CSV/XLSX reports from UPI results
+                try:
+                    recon_engine.generate_upi_report(results, output_run_dir, run_id=run_id)
+                    logger.info(f"UPI reports generated successfully")
+                except Exception as e:
+                    logger.warning(f"Could not generate UPI CSV reports: {e}")
             except Exception as e:
                 logger.error(f"Failed to save UPI results: {e}")
         else:
             logger.info(f"Using standard reconciliation engine for {run_id}")
             results = recon_engine.reconcile(dataframes)
-            
+
             # Generate reports for legacy format
             recon_engine.generate_report(results, run_folder, run_id=run_id)
             recon_engine.generate_adjustments_csv(results, run_folder)
@@ -622,16 +629,16 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
                     audit.log_data_export(run_id, 'csv', 0, user_id='system')
         except Exception:
             pass
-        
+
         logger.info(f"Reconciliation completed for {run_id}")
 
         # Prepare detailed summary response
         summary_response = {
-            "run_id": run_id, 
+            "run_id": run_id,
             "message": "Reconciliation complete and reports generated.",
             "status": "completed"
         }
-        
+
         # Add UPI-specific details if available
         if is_upi_run:
             output_path = os.path.join(OUTPUT_DIR, run_id, 'recon_output.json')
@@ -639,18 +646,18 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
                 try:
                     with open(output_path, 'r') as f:
                         results = json.load(f)
-                    
+
                     # Extract comprehensive summary
                     summary = results.get('summary', {})
                     exceptions = results.get('exceptions', [])
                     ttum_candidates = results.get('ttum_candidates', [])
-                    
+
                     summary_response["details"] = summary
                     summary_response["unmatched_count"] = len(exceptions)
                     summary_response["matched_count"] = summary.get('matched_cbs', 0) + summary.get('matched_switch', 0) + summary.get('matched_npci', 0)
                     summary_response["ttum_required_count"] = summary.get('ttum_required', 0)
                     summary_response["ttum_candidates_count"] = len(ttum_candidates)
-                    
+
                     # Add breakdown by source
                     summary_response["breakdown"] = {
                         "cbs": {
@@ -669,22 +676,66 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
                             "unmatched": summary.get('unmatched_npci', 0)
                         }
                     }
-                    
+
                     # Add exception types summary
                     exception_types = {}
                     for exc in exceptions:
                         exc_type = exc.get('exception_type', 'UNKNOWN')
                         exception_types[exc_type] = exception_types.get(exc_type, 0) + 1
                     summary_response["exception_types"] = exception_types
-                    
+
                 except Exception as e:
                     logger.warning(f"Could not extract details from results: {e}")
-        
+
         return summary_response
 
     except Exception as e:
         logger.exception(f"Reconciliation run error for {run_request.run_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Reconciliation process failed")
+
+
+@app.post("/api/v1/recon/run-cycle")
+async def run_reconciliation_cycle(
+    run_id: str = Query(...),
+    cycle_id: str = Query(...),
+    user: dict = Depends(get_current_user)
+):
+    """Run reconciliation for a specific cycle"""
+    try:
+        run_root = os.path.join(UPLOAD_DIR, run_id, f"cycle_{cycle_id}")
+
+        if not os.path.exists(run_root):
+            raise HTTPException(status_code=404, detail=f"Cycle {cycle_id} not found for run {run_id}")
+
+        # Load and process only this cycle's data
+        dataframes = file_handler.load_files_for_recon(run_root)
+
+        # Detect if this is a UPI reconciliation run
+        is_upi_run = _detect_upi_reconciliation(dataframes)
+
+        if is_upi_run:
+            cbs_df, switch_df, npci_df = _extract_upi_dataframes(dataframes)
+            results = upi_recon_engine.perform_upi_reconciliation(cbs_df, switch_df, npci_df, run_id, cycle_id)
+        else:
+            results = recon_engine.reconcile(dataframes)
+
+        # Save cycle-specific results
+        output_run_dir = os.path.join(OUTPUT_DIR, run_id, f"cycle_{cycle_id}")
+        os.makedirs(output_run_dir, exist_ok=True)
+
+        recon_output_path = os.path.join(output_run_dir, "recon_output.json")
+        with open(recon_output_path, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, default=str)
+
+        return {
+            "run_id": run_id,
+            "cycle_id": cycle_id,
+            "status": "completed",
+            "message": f"Reconciliation completed for cycle {cycle_id}"
+        }
+    except Exception as e:
+        logger.error(f"Cycle reconciliation error: {e}")
+        raise HTTPException(status_code=500, detail="Cycle reconciliation failed")
 
 
 
@@ -1391,7 +1442,6 @@ async def get_upload_metadata(run_id: Optional[str] = None):
         if not run_id:
             runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
             if not runs:
-                # Return empty metadata if no runs found
                 return {
                     "run_id": None,
                     "uploaded_files": [],
@@ -1399,12 +1449,17 @@ async def get_upload_metadata(run_id: Optional[str] = None):
                 }
             run_id = sorted(runs)[-1]
 
-        # Note: This uses UPLOAD_DIR which might differ from file_handler.base_upload_dir
+        # Search for metadata in nested directories
         run_folder = os.path.join(UPLOAD_DIR, run_id)
-        metadata_path = os.path.join(run_folder, "metadata.json")
+        metadata_path = None
 
-        if not os.path.exists(metadata_path):
-            # Return empty metadata if metadata file not found
+        for root_dir, dirs, files in os.walk(run_folder):
+            if 'metadata.json' in files:
+                metadata_path = os.path.join(root_dir, 'metadata.json')
+                break
+
+        if not metadata_path or not os.path.exists(metadata_path):
+            logger.warning(f"Metadata not found for run {run_id}")
             return {
                 "run_id": run_id,
                 "uploaded_files": [],
@@ -1414,12 +1469,13 @@ async def get_upload_metadata(run_id: Optional[str] = None):
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
 
-        # Transform saved_files to uploaded_files format for frontend
+        # Extract uploaded file types from saved_files dict
         uploaded_files = []
-        if 'saved_files' in metadata and isinstance(metadata['saved_files'], dict):
-            for file_type, file_info in metadata['saved_files'].items():
-                uploaded_files.append(file_type)
-        
+        if isinstance(metadata.get('saved_files'), dict):
+            uploaded_files = list(metadata['saved_files'].keys())
+
+        logger.info(f"Retrieved metadata for {run_id}: {uploaded_files}")
+
         return {
             "run_id": run_id,
             "uploaded_files": uploaded_files,
@@ -1430,8 +1486,6 @@ async def get_upload_metadata(run_id: Optional[str] = None):
             "status": "success"
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Get metadata error: {str(e)}")
         return {
@@ -1480,7 +1534,7 @@ async def get_latest_report(user: dict = Depends(get_current_user)):
 
 @app.get("/api/v1/reports/unmatched")
 async def get_unmatched_report(user: dict = Depends(get_current_user)):
-    """Get unmatched transactions report"""
+    """Get unmatched transactions report with proper format for frontend"""
     try:
         runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
         if not runs:
@@ -1495,18 +1549,26 @@ async def get_unmatched_report(user: dict = Depends(get_current_user)):
             
             # Extract unmatched from UPI format
             if isinstance(data, dict) and 'summary' in data:
-                # UPI format - convert exceptions to key-value format for frontend
-                exceptions_dict = {}
-                for exc in data.get('exceptions', []):
-                    if isinstance(exc, dict):
-                        rrn = exc.get('rrn') or exc.get('RRN') or 'unknown'
-                        exceptions_dict[rrn] = exc
+                # UPI format - return exceptions as array for easier frontend processing
+                exceptions_list = data.get('exceptions', [])
+                
+                # Ensure exceptions have direction field for frontend filtering
+                for exc in exceptions_list:
+                    if 'direction' not in exc and 'debit_credit' in exc:
+                        dr_cr = exc.get('debit_credit', '').strip().upper()
+                        if dr_cr.startswith('C'):
+                            exc['direction'] = 'INWARD'
+                        elif dr_cr.startswith('D'):
+                            exc['direction'] = 'OUTWARD'
+                        else:
+                            exc['direction'] = 'UNKNOWN'
                 
                 return JSONResponse(content={
                     "run_id": latest, 
-                    "data": exceptions_dict,
-                    "format": "upi",
-                    "summary": data.get('summary', {})
+                    "data": exceptions_list,
+                    "format": "upi_array",
+                    "summary": data.get('summary', {}),
+                    "total_exceptions": len(exceptions_list)
                 })
         
         # Then check UPLOAD_DIR (legacy results)
@@ -1575,6 +1637,67 @@ async def download_matched_reports(user: dict = Depends(get_current_user), run_i
         raise HTTPException(status_code=500, detail="Failed to prepare matched reports")
 
 
+@app.get("/api/v1/reports/available")
+async def get_available_reports(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """List all available reports for a run"""
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+        
+        available_reports = {
+            "json": [],
+            "csv": [],
+            "other": []
+        }
+        
+        # Check OUTPUT_DIR (UPI format)
+        output_dir = os.path.join(OUTPUT_DIR, target, 'reports')
+        if os.path.exists(output_dir):
+            for f in os.listdir(output_dir):
+                if f.endswith('.csv'):
+                    available_reports["csv"].append(f)
+                elif f.endswith('.json'):
+                    available_reports["json"].append(f)
+                else:
+                    available_reports["other"].append(f)
+        
+        # Check UPLOAD_DIR
+        run_folder = os.path.join(UPLOAD_DIR, target)
+        reports_dir = None
+        for root_dir, dirs, files in os.walk(run_folder):
+            if 'reports' in dirs:
+                reports_dir = os.path.join(root_dir, 'reports')
+                break
+        
+        if reports_dir and os.path.exists(reports_dir):
+            for f in os.listdir(reports_dir):
+                if f.endswith('.csv') and f not in available_reports["csv"]:
+                    available_reports["csv"].append(f)
+                elif f.endswith('.json') and f not in available_reports["json"]:
+                    available_reports["json"].append(f)
+                elif f not in available_reports["other"]:
+                    available_reports["other"].append(f)
+        
+        # Check for recon_output.json
+        output_json = os.path.join(OUTPUT_DIR, target, 'recon_output.json')
+        if os.path.exists(output_json):
+            available_reports["json"].append('recon_output.json')
+        
+        return JSONResponse(content={
+            "run_id": target,
+            "available_reports": available_reports,
+            "total_csv": len(available_reports["csv"]),
+            "total_json": len(available_reports["json"]),
+            "total_other": len(available_reports["other"])
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List available reports error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list available reports")
+
 @app.get("/api/v1/reports/summary")
 async def download_summary(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
     """Return the summary.json for a run."""
@@ -1630,6 +1753,88 @@ async def download_adjustments(user: dict = Depends(get_current_user), run_id: O
     except Exception as e:
         logger.error(f"Adjustment download error: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve adjustments file")
+
+@app.get("/api/v1/reports/matched/csv")
+async def download_matched_csv(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download matched transactions CSV report"""
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+        
+        # Try OUTPUT_DIR first (UPI format)
+        output_dir = os.path.join(OUTPUT_DIR, target, 'reports')
+        if os.path.exists(output_dir):
+            csv_file = None
+            for f in os.listdir(output_dir):
+                if 'matched' in f.lower() and f.endswith('.csv'):
+                    csv_file = os.path.join(output_dir, f)
+                    break
+            
+            if csv_file and os.path.exists(csv_file):
+                return FileResponse(csv_file, media_type='text/csv', filename='matched_transactions.csv')
+        
+        # Try UPLOAD_DIR
+        run_folder = os.path.join(UPLOAD_DIR, target)
+        reports_dir = None
+        for root_dir, dirs, files in os.walk(run_folder):
+            if 'reports' in dirs:
+                reports_dir = os.path.join(root_dir, 'reports')
+                break
+        
+        if reports_dir:
+            for f in os.listdir(reports_dir):
+                if 'matched' in f.lower() and f.endswith('.csv'):
+                    return FileResponse(os.path.join(reports_dir, f), media_type='text/csv', filename='matched_transactions.csv')
+        
+        raise HTTPException(status_code=404, detail="Matched CSV report not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download matched CSV error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download matched CSV")
+
+@app.get("/api/v1/reports/unmatched/csv")
+async def download_unmatched_csv(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download unmatched exceptions CSV report"""
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+        
+        # Try OUTPUT_DIR first (UPI format)
+        output_dir = os.path.join(OUTPUT_DIR, target, 'reports')
+        if os.path.exists(output_dir):
+            csv_file = None
+            for f in os.listdir(output_dir):
+                if 'unmatched' in f.lower() and f.endswith('.csv'):
+                    csv_file = os.path.join(output_dir, f)
+                    break
+            
+            if csv_file and os.path.exists(csv_file):
+                return FileResponse(csv_file, media_type='text/csv', filename='unmatched_exceptions.csv')
+        
+        # Try UPLOAD_DIR
+        run_folder = os.path.join(UPLOAD_DIR, target)
+        reports_dir = None
+        for root_dir, dirs, files in os.walk(run_folder):
+            if 'reports' in dirs:
+                reports_dir = os.path.join(root_dir, 'reports')
+                break
+        
+        if reports_dir:
+            for f in os.listdir(reports_dir):
+                if 'unmatched' in f.lower() and f.endswith('.csv'):
+                    return FileResponse(os.path.join(reports_dir, f), media_type='text/csv', filename='unmatched_exceptions.csv')
+        
+        raise HTTPException(status_code=404, detail="Unmatched CSV report not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download unmatched CSV error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download unmatched CSV")
 
 @app.get("/api/v1/recon/latest/raw")
 async def get_latest_raw_data(user: dict = Depends(get_current_user)):
@@ -1814,9 +2019,16 @@ async def api_rollback_cycle_wise(run_id: Optional[str] = Query(None), cycle_id:
     try:
         if not run_id or not cycle_id:
             raise HTTPException(status_code=400, detail="run_id and cycle_id are required")
-        result = rollback_manager.cycle_wise_rollback(run_id, cycle_id, confirmation_required=False)
+        
+        # Clean up cycle_id in case it has date prefix (e.g., '20260106_1C' -> '1C')
+        clean_cycle_id = cycle_id
+        if '_' in cycle_id:
+            # Take the last part after splitting by underscore (should be the cycle ID)
+            clean_cycle_id = cycle_id.split('_')[-1]
+        
+        result = rollback_manager.cycle_wise_rollback(run_id, clean_cycle_id, confirmation_required=False)
         try:
-            audit.log_rollback_operation(run_id, 'cycle_wise', user_id='system', details={'api_call': True, 'cycle_id': cycle_id})
+            audit.log_rollback_operation(run_id, 'cycle_wise', user_id='system', details={'api_call': True, 'cycle_id': clean_cycle_id})
         except Exception:
             pass
         return JSONResponse(content={"status": "ok", "result": result})
@@ -1886,9 +2098,10 @@ async def api_get_available_cycles(run_id: Optional[str] = Query(None)):
     try:
         if not run_id:
             raise HTTPException(status_code=400, detail='run_id is required')
-        
+
         cycles = set()
-        
+        valid_cycles = ['1C', '2C', '3C', '4C', '5C', '6C', '7C', '8C', '9C', '10C']
+
         # Check in UPLOAD_DIR (where files are uploaded and organized by cycle)
         upload_base = os.path.join(UPLOAD_DIR, run_id)
         if os.path.exists(upload_base):
@@ -1896,8 +2109,13 @@ async def api_get_available_cycles(run_id: Optional[str] = Query(None)):
                 # Look for cycle_<id> folders
                 if entry.startswith('cycle_'):
                     cycle_id = entry.split('cycle_', 1)[1]
-                    cycles.add(cycle_id)
-        
+                    # Remove date prefix if present (format: YYYYMMDD_CYCLE_ID)
+                    if '_' in cycle_id:
+                        cycle_id = cycle_id.split('_')[-1]
+                    # Only add valid cycle IDs
+                    if cycle_id in valid_cycles:
+                        cycles.add(cycle_id)
+
         # Also check in OUTPUT_DIR for any additional cycles
         output_base = os.path.join(OUTPUT_DIR, run_id)
         if os.path.exists(output_base):
@@ -1907,17 +2125,23 @@ async def api_get_available_cycles(run_id: Optional[str] = Query(None)):
                     try:
                         for entry in os.listdir(path):
                             if entry.startswith('cycle_'):
+                                # Extract cycle ID, removing any date prefix
                                 cycle_id = entry.split('cycle_', 1)[1]
-                                cycles.add(cycle_id)
+                                # Remove date prefix if present (format: YYYYMMDD_CYCLE_ID)
+                                if '_' in cycle_id:
+                                    cycle_id = cycle_id.split('_')[-1]
+                                # Only add valid cycle IDs
+                                if cycle_id in valid_cycles:
+                                    cycles.add(cycle_id)
                     except (OSError, PermissionError):
                         continue
-        
+
         available_cycles = sorted(list(cycles))
         return JSONResponse(content={
-            'run_id': run_id, 
-            'status': 'success', 
-            'available_cycles': available_cycles, 
-            'total_available': len(available_cycles), 
+            'run_id': run_id,
+            'status': 'success',
+            'available_cycles': available_cycles,
+            'total_available': len(available_cycles),
             'all_cycles': available_cycles
         })
     except HTTPException:
@@ -1925,6 +2149,293 @@ async def api_get_available_cycles(run_id: Optional[str] = Query(None)):
     except Exception as e:
         logger.error(f"Get available cycles error: {e}")
         raise HTTPException(status_code=500, detail="Failed to list available cycles")
+
+
+@app.get('/api/v1/recon/cycles/{run_id}')
+async def get_run_cycles(run_id: str, user: dict = Depends(get_current_user)):
+    """Get all cycles for a specific run"""
+    try:
+        cycles_info = []
+
+        # Check in UPLOAD_DIR for cycle folders
+        upload_base = os.path.join(UPLOAD_DIR, run_id)
+        if os.path.exists(upload_base):
+            for entry in os.listdir(upload_base):
+                if entry.startswith('cycle_'):
+                    cycle_id = entry.split('cycle_', 1)[1]
+                    cycle_path = os.path.join(upload_base, entry)
+
+                    # Get cycle metadata
+                    metadata_path = os.path.join(cycle_path, 'metadata.json')
+                    cycle_metadata = {}
+                    if os.path.exists(metadata_path):
+                        try:
+                            with open(metadata_path, 'r') as f:
+                                cycle_metadata = json.load(f)
+                        except Exception:
+                            pass
+
+                    # Check if reconciliation has been run for this cycle
+                    output_path = os.path.join(OUTPUT_DIR, run_id, entry, 'recon_output.json')
+                    has_results = os.path.exists(output_path)
+
+                    cycles_info.append({
+                        'cycle_id': cycle_id,
+                        'path': cycle_path,
+                        'has_results': has_results,
+                        'metadata': cycle_metadata,
+                        'files_count': len([f for f in os.listdir(cycle_path) if f.endswith(('.csv', '.xlsx', '.txt'))])
+                    })
+
+        return JSONResponse(content={
+            'run_id': run_id,
+            'cycles': cycles_info,
+            'total_cycles': len(cycles_info)
+        })
+    except Exception as e:
+        logger.error(f"Get run cycles error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get run cycles")
+
+
+@app.get('/api/v1/recon/cycle/{run_id}/{cycle_id}/summary')
+async def get_cycle_summary(run_id: str, cycle_id: str, user: dict = Depends(get_current_user)):
+    """Get summary for a specific cycle"""
+    try:
+        # Check for cycle-specific results
+        output_path = os.path.join(OUTPUT_DIR, run_id, f"cycle_{cycle_id}", 'recon_output.json')
+
+        if not os.path.exists(output_path):
+            raise HTTPException(status_code=404, detail=f"No results found for cycle {cycle_id}")
+
+        with open(output_path, 'r') as f:
+            results = json.load(f)
+
+        # Format response similar to main summary
+        summary = results.get('summary', {})
+        exceptions = results.get('exceptions', [])
+
+        return JSONResponse(content={
+            "run_id": run_id,
+            "cycle_id": cycle_id,
+            "status": "completed",
+            "totals": {
+                "count": summary.get('total_cbs', 0) + summary.get('total_switch', 0) + summary.get('total_npci', 0),
+                "amount": 0
+            },
+            "matched": {
+                "count": summary.get('matched_cbs', 0) + summary.get('matched_switch', 0) + summary.get('matched_npci', 0),
+                "amount": 0
+            },
+            "unmatched": {
+                "count": len(exceptions),
+                "amount": 0
+            },
+            "breakdown": {
+                "cbs": {
+                    "total": summary.get('total_cbs', 0),
+                    "matched": summary.get('matched_cbs', 0),
+                    "unmatched": summary.get('unmatched_cbs', 0)
+                },
+                "switch": {
+                    "total": summary.get('total_switch', 0),
+                    "matched": summary.get('matched_switch', 0),
+                    "unmatched": summary.get('unmatched_switch', 0)
+                },
+                "npci": {
+                    "total": summary.get('total_npci', 0),
+                    "matched": summary.get('matched_npci', 0),
+                    "unmatched": summary.get('unmatched_npci', 0)
+                }
+            },
+            "ttum_required": summary.get('ttum_required', 0)
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get cycle summary error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get cycle summary")
+
+
+@app.get('/api/v1/recon/merge-cycles')
+async def merge_cycles(run_id: str = Query(...), cycle_ids: str = Query(...), user: dict = Depends(get_current_user)):
+    """Merge multiple cycles into a single consolidated view"""
+    try:
+        if not run_id:
+            raise HTTPException(status_code=400, detail="run_id is required")
+
+        if not cycle_ids:
+            raise HTTPException(status_code=400, detail="cycle_ids is required (comma-separated)")
+
+        # Parse cycle IDs
+        cycles = [cid.strip() for cid in cycle_ids.split(',') if cid.strip()]
+
+        if not cycles:
+            raise HTTPException(status_code=400, detail="At least one cycle_id must be provided")
+
+        merged_summary = {
+            "run_id": run_id,
+            "merged_cycles": cycles,
+            "status": "completed",
+            "totals": {"count": 0, "amount": 0},
+            "matched": {"count": 0, "amount": 0},
+            "unmatched": {"count": 0, "amount": 0},
+            "breakdown": {
+                "cbs": {"total": 0, "matched": 0, "unmatched": 0},
+                "switch": {"total": 0, "matched": 0, "unmatched": 0},
+                "npci": {"total": 0, "matched": 0, "unmatched": 0}
+            },
+            "ttum_required": 0,
+            "cycle_summaries": []
+        }
+
+        # Aggregate data from each cycle
+        for cycle_id in cycles:
+            output_path = os.path.join(OUTPUT_DIR, run_id, f"cycle_{cycle_id}", 'recon_output.json')
+
+            if not os.path.exists(output_path):
+                logger.warning(f"No results found for cycle {cycle_id}, skipping")
+                continue
+
+            try:
+                with open(output_path, 'r') as f:
+                    results = json.load(f)
+
+                summary = results.get('summary', {})
+                exceptions = results.get('exceptions', [])
+
+                # Add to totals
+                merged_summary["totals"]["count"] += summary.get('total_cbs', 0) + summary.get('total_switch', 0) + summary.get('total_npci', 0)
+                merged_summary["matched"]["count"] += summary.get('matched_cbs', 0) + summary.get('matched_switch', 0) + summary.get('matched_npci', 0)
+                merged_summary["unmatched"]["count"] += len(exceptions)
+
+                # Add to breakdown
+                for source in ['cbs', 'switch', 'npci']:
+                    merged_summary["breakdown"][source]["total"] += summary.get(f'total_{source}', 0)
+                    merged_summary["breakdown"][source]["matched"] += summary.get(f'matched_{source}', 0)
+                    merged_summary["breakdown"][source]["unmatched"] += summary.get(f'unmatched_{source}', 0)
+
+                merged_summary["ttum_required"] += summary.get('ttum_required', 0)
+
+                # Store individual cycle summary
+                merged_summary["cycle_summaries"].append({
+                    "cycle_id": cycle_id,
+                    "summary": summary,
+                    "exception_count": len(exceptions)
+                })
+
+            except Exception as e:
+                logger.warning(f"Error processing cycle {cycle_id}: {e}")
+                continue
+
+        return JSONResponse(content=merged_summary)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Merge cycles error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to merge cycles")
+
+
+@app.get('/api/v1/recon/compare-cycles')
+async def compare_cycles(run_id: str = Query(...), cycle_ids: str = Query(...), user: dict = Depends(get_current_user)):
+    """Compare reconciliation results across multiple cycles"""
+    try:
+        if not run_id:
+            raise HTTPException(status_code=400, detail="run_id is required")
+
+        if not cycle_ids:
+            raise HTTPException(status_code=400, detail="cycle_ids is required (comma-separated)")
+
+        # Parse cycle IDs
+        cycles = [cid.strip() for cid in cycle_ids.split(',') if cid.strip()]
+
+        if len(cycles) < 2:
+            raise HTTPException(status_code=400, detail="At least two cycle_ids must be provided for comparison")
+
+        comparison_data = {
+            "run_id": run_id,
+            "compared_cycles": cycles,
+            "cycle_comparison": [],
+            "summary_comparison": {
+                "totals": {},
+                "matched": {},
+                "unmatched": {},
+                "breakdown": {
+                    "cbs": {},
+                    "switch": {},
+                    "npci": {}
+                }
+            }
+        }
+
+        # Collect data for each cycle
+        cycle_data = {}
+        for cycle_id in cycles:
+            output_path = os.path.join(OUTPUT_DIR, run_id, f"cycle_{cycle_id}", 'recon_output.json')
+
+            if not os.path.exists(output_path):
+                logger.warning(f"No results found for cycle {cycle_id}, skipping")
+                continue
+
+            try:
+                with open(output_path, 'r') as f:
+                    results = json.load(f)
+
+                summary = results.get('summary', {})
+                exceptions = results.get('exceptions', [])
+
+                cycle_data[cycle_id] = {
+                    "summary": summary,
+                    "exceptions": exceptions,
+                    "metrics": {
+                        "total_transactions": summary.get('total_cbs', 0) + summary.get('total_switch', 0) + summary.get('total_npci', 0),
+                        "matched_transactions": summary.get('matched_cbs', 0) + summary.get('matched_switch', 0) + summary.get('matched_npci', 0),
+                        "unmatched_transactions": len(exceptions),
+                        "ttum_required": summary.get('ttum_required', 0)
+                    }
+                }
+
+            except Exception as e:
+                logger.warning(f"Error processing cycle {cycle_id}: {e}")
+                continue
+
+        # Build comparison data
+        for cycle_id, data in cycle_data.items():
+            comparison_data["cycle_comparison"].append({
+                "cycle_id": cycle_id,
+                "metrics": data["metrics"],
+                "summary": data["summary"]
+            })
+
+        # Calculate differences and trends
+        if len(cycle_data) >= 2:
+            sorted_cycles = sorted(cycle_data.keys())
+            for i in range(1, len(sorted_cycles)):
+                current = sorted_cycles[i]
+                previous = sorted_cycles[i-1]
+
+                curr_metrics = cycle_data[current]["metrics"]
+                prev_metrics = cycle_data[previous]["metrics"]
+
+                # Calculate differences
+                differences = {
+                    "cycle_comparison": f"{current}_vs_{previous}",
+                    "total_diff": curr_metrics["total_transactions"] - prev_metrics["total_transactions"],
+                    "matched_diff": curr_metrics["matched_transactions"] - prev_metrics["matched_transactions"],
+                    "unmatched_diff": curr_metrics["unmatched_transactions"] - prev_metrics["unmatched_transactions"],
+                    "ttum_diff": curr_metrics["ttum_required"] - prev_metrics["ttum_required"]
+                }
+
+                # Add to comparison data
+                comparison_data.setdefault("differences", []).append(differences)
+
+        return JSONResponse(content=comparison_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Compare cycles error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to compare cycles")
 
 
 

@@ -13,39 +13,70 @@ interface ReportType {
 }
 
 const reportTypes: ReportType[] = [
+  // JSON Reports
   { 
     id: "matched",
-    name: "Matched Transactions Report", 
+    name: "Matched Transactions (JSON)", 
     description: "All successfully matched transactions across CBS, Switch, and NPCI",
     endpoint: "matched"
   },
   { 
     id: "unmatched",
-    name: "Unmatched Transactions Report", 
+    name: "Unmatched Transactions (JSON)", 
     description: "Transactions that couldn't be matched - includes partial matches and orphans",
     endpoint: "unmatched"
   },
   { 
     id: "summary",
-    name: "Reconciliation Summary Report", 
+    name: "Reconciliation Summary (JSON)", 
     description: "Complete summary with statistics and breakdown of all transaction categories",
     endpoint: "summary"
   },
+  
+  // CSV Reports
+  { 
+    id: "matched_csv",
+    name: "Matched Transactions (CSV)", 
+    description: "Matched transactions in CSV format for Excel import",
+    endpoint: "matched/csv"
+  },
+  { 
+    id: "unmatched_csv",
+    name: "Unmatched Transactions (CSV)", 
+    description: "Unmatched transactions in CSV format for Excel import",
+    endpoint: "unmatched/csv"
+  },
+  
+  // TTUM Reports
   { 
     id: "ttum",
-    name: "TTUM Report", 
-    description: "Transaction Type Unmatched Report for detailed analysis",
+    name: "TTUM Report (ZIP)", 
+    description: "Transaction Type Unmatched Report - all TTUM files packaged together",
     endpoint: "ttum"
   },
   { 
+    id: "ttum_csv",
+    name: "TTUM Report (CSV)", 
+    description: "TTUM data in CSV format for detailed analysis",
+    endpoint: "ttum/csv"
+  },
+  { 
+    id: "ttum_xlsx",
+    name: "TTUM Report (XLSX)", 
+    description: "TTUM data in Excel format with formatting",
+    endpoint: "ttum/xlsx"
+  },
+  
+  // Other Reports
+  { 
     id: "adjustments",
-    name: "Adjustments CSV", 
+    name: "Adjustments (CSV)", 
     description: "CSV file containing all adjustments and force-match candidates",
     endpoint: "adjustments"
   },
   { 
     id: "report",
-    name: "Text Report", 
+    name: "Text Report (TXT)", 
     description: "Human-readable text report with detailed reconciliation breakdown",
     endpoint: "report"
   },
@@ -59,6 +90,7 @@ export default function Reports() {
     try {
       setLoadingReports(prev => ({ ...prev, [report.id]: true }));
 
+      // Determine file type and download accordingly
       if (report.id === "adjustments") {
         // Download CSV file
         const blob = await apiClient.downloadLatestAdjustments();
@@ -91,6 +123,70 @@ export default function Reports() {
           title: "Success",
           description: "Report downloaded successfully"
         });
+      } else if (report.endpoint.includes('/csv')) {
+        // Download CSV report
+        const blob = await apiClient.downloadReport(report.endpoint);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${report.id}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+
+        toast({
+          title: "Success",
+          description: `${report.name} downloaded successfully`
+        });
+      } else if (report.endpoint.includes('/xlsx')) {
+        // Download XLSX report
+        const blob = await apiClient.downloadReport(report.endpoint);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${report.id}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+
+        toast({
+          title: "Success",
+          description: `${report.name} downloaded successfully`
+        });
+      } else if (report.endpoint === 'ttum') {
+        // Download TTUM ZIP
+        const blob = await apiClient.downloadReport(report.endpoint);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'ttum_report.zip';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+
+        toast({
+          title: "Success",
+          description: "TTUM ZIP downloaded successfully"
+        });
+      } else if (report.endpoint === 'matched') {
+        // Download Matched Reports ZIP
+        const blob = await apiClient.downloadReport(report.endpoint);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'matched_reports.zip';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+
+        toast({
+          title: "Success",
+          description: "Matched reports ZIP downloaded successfully"
+        });
       } else {
         // Get JSON report data
         const data = await apiClient.getReport(report.endpoint);
@@ -101,7 +197,7 @@ export default function Reports() {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${report.id}_report.json`;
+        a.download = `${report.id}.json`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

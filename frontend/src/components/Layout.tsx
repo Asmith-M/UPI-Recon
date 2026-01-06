@@ -1,6 +1,7 @@
 import { ReactNode, useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { useDate } from "../contexts/DateContext";
 import { cn } from "../lib/utils";
 import {
   LayoutDashboard,
@@ -19,8 +20,9 @@ import {
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
+import DateFilter from "./DateFilter";
 import nstechxLogo from "../assets/nstechxbg.png";
-import verifAiLogo from "../assets/verif_ai.jpeg";
+import verifAiLogo from "../assets/verif_ai.png";
 
 interface LayoutProps {
   children: ReactNode;
@@ -43,6 +45,7 @@ export default function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const { logout, user } = useAuth();
+  const { dateFrom, dateTo, setDateRange } = useDate();
   const [isCollapsed, setIsCollapsed] = useState(true); // Start collapsed
 
   // Load saved state from localStorage
@@ -178,11 +181,18 @@ export default function Layout({ children }: LayoutProps) {
 
       {/* Main Content */}
       <main className="flex-1 overflow-auto flex flex-col">
-        {/* Top Bar with verif.ai Logo */}
-        <div className="bg-white border-b border-gray-200 px-6 py-4 flex justify-end">
-          <img 
-            src={verifAiLogo} 
-            alt="verif.ai" 
+        {/* Top Bar with Date Filter and verif.ai Logo */}
+        <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+          <div className="flex-1 max-w-md">
+            <DateFilter
+              onDateChange={setDateRange}
+              showRefresh={false}
+              className="shadow-none border-none bg-transparent"
+            />
+          </div>
+          <img
+            src={verifAiLogo}
+            alt="verif.ai"
             className="h-16 object-contain"
           />
         </div>

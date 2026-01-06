@@ -654,7 +654,7 @@ class RollbackManager:
         """
         Rollback specific NPCI cycle for re-processing with atomic operations
         Does not affect other cycles or previously matched transactions
-        NPCI operates on 10 cycles: 1A, 1B, 1C, 2A, 2B, 2C, 3A, 3B, 3C, 4
+        NPCI operates on 10 cycles: 1C, 2C, 3C, 4C, 5C, 6C, 7C, 8C, 9C, 10C
 
         Args:
             run_id: Current run identifier
@@ -670,7 +670,7 @@ class RollbackManager:
             raise ValueError(f"Cycle-wise rollback not allowed: {validation_msg}")
 
         # Validate cycle_id format
-        valid_cycles = ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C', '4']
+        valid_cycles = ['1C', '2C', '3C', '4C', '5C', '6C', '7C', '8C', '9C', '10C']
         if cycle_id not in valid_cycles:
             raise ValueError(f"Invalid cycle ID '{cycle_id}'. Valid cycles: {', '.join(valid_cycles)}")
 
@@ -738,6 +738,7 @@ class RollbackManager:
 
             # Atomic cycle transaction restoration
             transactions_restored = []
+            cycle_txns = []  # Initialize here to avoid scope issues
 
             # Support mapping-format (rrn->record) or legacy list-format
             if isinstance(recon_data, dict) and not recon_data.get('matched') and not recon_data.get('unmatched'):
@@ -824,14 +825,14 @@ class RollbackManager:
                 recon_data['summary'] = {
                     'total_matched': 0,
                     'total_unmatched': 0,
-                'last_cycle_rollback': {
-                    'rollback_id': rollback_id,
-                    'cycle_id': cycle_id,
-                    'transactions_restored': len(transactions_restored),
-                    'timestamp': datetime.now().isoformat(),
-                    'confirmation_provided': not confirmation_required
-                },
-                'rollback_timestamp': datetime.now().isoformat()
+                    'last_cycle_rollback': {
+                        'rollback_id': rollback_id,
+                        'cycle_id': cycle_id,
+                        'transactions_restored': len(transactions_restored),
+                        'timestamp': datetime.now().isoformat(),
+                        'confirmation_provided': not confirmation_required
+                    },
+                    'rollback_timestamp': datetime.now().isoformat()
                 }
 
             # Atomic save operation

@@ -273,6 +273,13 @@ export const apiClient = {
     return response.data;
   },
 
+  downloadReport: async (endpoint: string): Promise<Blob> => {
+    const response: AxiosResponse<Blob> = await api.get(`/api/v1/reports/${endpoint}`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+
   // Rollback Operations (Phase 3)
   rollbackWholeProcess: async (runId: string, reason: string = "User initiated whole process rollback"): Promise<any> => {
     const response: AxiosResponse = await api.post(

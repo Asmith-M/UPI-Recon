@@ -10,16 +10,16 @@ import { apiClient } from "../lib/api";
 import { useToast } from "../hooks/use-toast";
 import CycleSelector from "../components/CycleSelector";
 import DirectionSelector from "../components/DirectionSelector";
+import { useDate } from "../contexts/DateContext";
 import { exportToCSV } from "../lib/utils";
 
 export default function Unmatched() {
   const { toast } = useToast();
+  const { dateFrom, dateTo, setDateFrom, setDateTo } = useDate();
   const [unmatchedNPCI, setUnmatchedNPCI] = useState<any[]>([]);
   const [unmatchedCBS, setUnmatchedCBS] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [amountFrom, setAmountFrom] = useState("");
   const [amountTo, setAmountTo] = useState("");
@@ -33,14 +33,17 @@ export default function Unmatched() {
   const fetchUnmatchedData = async () => {
     try {
       setLoading(true);
-      const report = await apiClient.getReport("unmatched");
+      const response = await apiClient.getReport("unmatched");
+      const report = response.data || {};
       
-      // Transform the data into unmatched format
-      const transformed = transformReportToUnmatched(report.data || {});
+      // Transform the data based on format
+      const transformed = transformReportToUnmatched(report.data || [], report.format || 'legacy');
       setUnmatchedNPCI(transformed.npci);
       setUnmatchedCBS(transformed.cbs);
+      
+      console.log(`Loaded unmatched data - Format: ${report.format}, NPCI: ${transformed.npci.length}, CBS: ${transformed.cbs.length}`);
     } catch (error: any) {
-      console.log("Error fetching unmatched data:", error.message);
+      console.error("Error fetching unmatched data:", error.message);
       setUnmatchedNPCI([]);
       setUnmatchedCBS([]);
     } finally {
@@ -48,58 +51,132 @@ export default function Unmatched() {
     }
   };
 
-  const transformReportToUnmatched = (data: any) => {
+  const transformReportToUnmatched = (data: any, format: string = 'legacy') => {
     const npci: any[] = [];
     const cbs: any[] = [];
 
-    // Convert raw data into table format
-    Object.entries(data).forEach(([rrn, record]: [string, any]) => {
-      // Determine which system is missing based on status
-      const hasCBS = record.cbs !== null && record.cbs !== undefined;
-      const hasSwitch = record.switch !== null && record.switch !== undefined;
-      const hasNPCI = record.npci !== null && record.npci !== undefined;
+    if (!data) {
+      console.warn("No data provided for unmatched transformation");
+      return { npci, cbs };
+    }
 
-      // Create transaction object
+    // Handle UPI array format (new format from backend)
+    if (format === 'upi_array' && Array.isArray(data)) {
+      console.log(`Processing ${data.length} exceptions in UPI array format`);
+      
+      data.forEach((exc: any) => {
+        if (!exc || typeof exc !== 'object') return;
+
+        const transaction = {
+          source: exc.source || 'NPCI',
+          rrn: exc.rrn || 'unknown',
+          drCr: exc.debit_credit || exc.dr_cr || 'Dr',
+          amount: parseFloat(exc.amount) || 0,
+          amountFormatted: `₹${(parseFloat(exc.amount) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          tranDate: exc.date || exc.tran_date || new Date().toLocaleDateString(),
+          rc: exc.rc || '00',
+          type: exc.type || exc.tran_type || 'UPI',
+          exceptionType: exc.exception_type,
+          ttumRequired: exc.ttum_required || false,
+          direction: exc.direction || 'UNKNOWN'
+        };
+
+        // Route to appropriate list based on source
+        const source = (exc.source || 'NPCI').toUpperCase();
+        if (source === 'NPCI') {
+          npci.push(transaction);
+        } else if (source === 'CBS') {
+          cbs.push(transaction);
+        } else if (source === 'SWITCH') {
+          // Switch unmatched - add to NPCI list
+          npci.push({ ...transaction, source: 'SWITCH' });
+        }
+      });
+
+      console.log(`Transformed UPI array format - NPCI: ${npci.length}, CBS: ${cbs.length}`);
+      return { npci, cbs };
+    }
+
+    // Handle legacy object format (backward compatibility)
+    if (typeof data !== 'object' || Array.isArray(data)) {
+      console.warn("Invalid data format for unmatched transformation:", data);
+      return { npci, cbs };
+    }
+
+    // Convert object to array format
+    const records = Object.entries(data).map(([rrn, record]) => ({
+      rrn,
+      ...(record && typeof record === 'object' ? record : {})
+    }));
+
+    records.forEach((record: any) => {
+      if (!record) return;
+
+      const rrn = record.rrn || record.RRN || 'unknown';
+
+      // Extract data from each source - handle multiple naming conventions
+      const cbs_data = record.cbs || record.CBS || record.gl;
+      const switch_data = record.switch || record.SWITCH;
+      const npci_data = record.npci || record.NPCI;
+
+      // Helper to create transaction object
       const createTransaction = (sourceData: any, sourceName: string) => {
         if (!sourceData) return null;
+
+        const amount = parseFloat(sourceData.amount) || 0;
+        const drCr = sourceData.dr_cr || sourceData.debit_credit || sourceData.debit || "Dr";
         
+        // Determine direction
+        let direction = 'UNKNOWN';
+        if (drCr) {
+          const drCrUpper = String(drCr).toUpperCase();
+          direction = drCrUpper.startsWith('C') ? 'INWARD' : drCrUpper.startsWith('D') ? 'OUTWARD' : 'UNKNOWN';
+        }
+
         return {
           source: sourceName,
           rrn: rrn,
-          drCr: sourceData.dr_cr || "Dr",
-          amount: sourceData.amount || 0,
-          amountFormatted: `₹${sourceData.amount?.toLocaleString() || 0}`,
-          tranDate: sourceData.date || new Date().toLocaleDateString(),
-          rc: sourceData.rc || "00",
-          type: sourceData.tran_type || "UPI"
+          drCr: drCr,
+          amount: amount,
+          amountFormatted: `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          tranDate: sourceData.date || sourceData.tran_date || sourceData.transaction_date || new Date().toLocaleDateString(),
+          rc: sourceData.rc || sourceData.response_code || "00",
+          type: sourceData.tran_type || sourceData.type || "UPI",
+          direction: direction
         };
       };
 
+      // Determine which system is missing
+      const hasCBS = cbs_data !== null && cbs_data !== undefined;
+      const hasSwitch = switch_data !== null && switch_data !== undefined;
+      const hasNPCI = npci_data !== null && npci_data !== undefined;
+
       // Add to NPCI list if NPCI data exists but CBS is missing
       if (hasNPCI && !hasCBS) {
-        const transaction = createTransaction(record.npci, "NPCI");
+        const transaction = createTransaction(npci_data, "NPCI");
         if (transaction) npci.push(transaction);
       }
 
       // Add to CBS list if CBS data exists but NPCI is missing
       if (hasCBS && !hasNPCI) {
-        const transaction = createTransaction(record.cbs, "CBS");
+        const transaction = createTransaction(cbs_data, "CBS");
         if (transaction) cbs.push(transaction);
       }
 
       // Also add if it's a mismatch or partial match
-      if (record.status === 'PARTIAL_MATCH' || record.status === 'MISMATCH' || record.status === 'ORPHAN') {
+      if (record.status === 'PARTIAL_MATCH' || record.status === 'MISMATCH' || record.status === 'ORPHAN' || record.status === 'PARTIAL_MISMATCH') {
         if (hasNPCI) {
-          const transaction = createTransaction(record.npci, "NPCI");
+          const transaction = createTransaction(npci_data, "NPCI");
           if (transaction && !npci.some(t => t.rrn === rrn)) npci.push(transaction);
         }
         if (hasCBS) {
-          const transaction = createTransaction(record.cbs, "CBS");
+          const transaction = createTransaction(cbs_data, "CBS");
           if (transaction && !cbs.some(t => t.rrn === rrn)) cbs.push(transaction);
         }
       }
     });
 
+    console.log(`Transformed legacy format - NPCI: ${npci.length}, CBS: ${cbs.length}`);
     return { npci, cbs };
   };
 
@@ -122,6 +199,14 @@ export default function Unmatched() {
     // RRN search
     if (searchTerm && !row.rrn.toUpperCase().includes(searchTerm.toUpperCase())) {
       return false;
+    }
+
+    // Direction filter
+    if (selectedDirection !== "all") {
+      const rowDirection = row.direction || (row.drCr?.startsWith('C') ? 'INWARD' : row.drCr?.startsWith('D') ? 'OUTWARD' : 'UNKNOWN');
+      if (rowDirection.toUpperCase() !== selectedDirection.toUpperCase()) {
+        return false;
+      }
     }
 
     // Date range filter

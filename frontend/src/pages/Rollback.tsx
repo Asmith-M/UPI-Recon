@@ -463,7 +463,7 @@ export default function Rollback() {
               <CardContent className="pt-6 space-y-2">
                 <h3 className="font-semibold flex items-center gap-2"><Repeat className="h-5 w-5 text-purple-600" /> Cycle-Wise Rollback</h3>
                 <p className="text-sm text-muted-foreground">
-                  Rolls back a specific NPCI cycle (1A-1C, 2A-2C, 3A-3C, 4) for reprocessing without affecting others.
+                  Rolls back a specific NPCI cycle (1C-10C) for reprocessing without affecting others.
                 </p>
               </CardContent>
             </Card>

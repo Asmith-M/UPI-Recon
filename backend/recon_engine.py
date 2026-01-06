@@ -536,6 +536,101 @@ class ReconciliationEngine:
         except Exception:
             pass
 
+    def generate_upi_report(self, upi_results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
+        """Generate CSV reports from UPI reconciliation results
+        
+        Generates:
+        - matched_transactions.csv: All matched transactions
+        - unmatched_exceptions.csv: All exceptions that need attention
+        - ttum_candidates.csv: Transactions requiring TTUM generation
+        """
+        import os
+        import pandas as pd
+        from datetime import datetime
+        
+        # Ensure reports directory exists
+        reports_dir = self._ensure_reports_dir(run_folder)
+        logger.info(f"Generating UPI reports in {reports_dir} for run {run_id}")
+        
+        try:
+            # Verify directory is writable
+            if not os.access(reports_dir, os.W_OK):
+                logger.warning(f"Reports directory not writable: {reports_dir}, attempting to create...")
+                os.makedirs(reports_dir, exist_ok=True)
+            
+            # Extract matched transactions
+            summary = upi_results.get('summary', {})
+            exceptions = upi_results.get('exceptions', [])
+            ttum_candidates = upi_results.get('ttum_candidates', [])
+            
+            # Generate matched transactions report
+            matched_rows = []
+            for status_key in ['cbs_breakdown', 'switch_breakdown', 'npci_breakdown']:
+                if status_key in summary.get('status_breakdown', {}):
+                    breakdown = summary['status_breakdown'][status_key]
+                    if isinstance(breakdown, dict) and 'MATCHED' in breakdown:
+                        matched_rows.append({
+                            'run_id': run_id,
+                            'cycle_id': cycle_id or '',
+                            'source': status_key.split('_')[0].upper(),
+                            'matched_count': breakdown['MATCHED'],
+                            'unmatched_count': breakdown.get('UNMATCHED', 0),
+                            'hanging_count': breakdown.get('HANGING', 0)
+                        })
+            
+            if matched_rows:
+                df_matched = pd.DataFrame(matched_rows)
+                matched_path = os.path.join(reports_dir, 'matched_transactions.csv')
+                df_matched.to_csv(matched_path, index=False, encoding='utf-8')
+                logger.info(f"✅ Generated matched transactions report: {matched_path}")
+                assert os.path.exists(matched_path), f"Failed to create {matched_path}"
+            else:
+                logger.info("No matched transactions to report")
+            
+            # Generate exceptions report
+            if exceptions:
+                df_exceptions = pd.DataFrame(exceptions)
+                # Ensure required columns
+                for col in ['source', 'rrn', 'amount', 'date', 'exception_type']:
+                    if col not in df_exceptions.columns:
+                        df_exceptions[col] = ''
+                
+                # Reorder columns for readability - include direction if available
+                cols_to_keep = ['source', 'rrn', 'amount', 'date', 'time', 'reference', 
+                               'description', 'debit_credit', 'direction', 'exception_type', 'ttum_required']
+                cols_present = [c for c in cols_to_keep if c in df_exceptions.columns]
+                df_exceptions = df_exceptions[cols_present]
+                
+                exceptions_path = os.path.join(reports_dir, 'unmatched_exceptions.csv')
+                df_exceptions.to_csv(exceptions_path, index=False, encoding='utf-8')
+                logger.info(f"✅ Generated exceptions report: {exceptions_path} ({len(exceptions)} records)")
+                assert os.path.exists(exceptions_path), f"Failed to create {exceptions_path}"
+            else:
+                logger.info("No exceptions to report")
+            
+            # Generate TTUM candidates report
+            if ttum_candidates:
+                df_ttum = pd.DataFrame(ttum_candidates)
+                # Ensure required columns
+                for col in ['source', 'rrn', 'amount', 'ttum_type', 'exception_type']:
+                    if col not in df_ttum.columns:
+                        df_ttum[col] = ''
+                
+                ttum_path = os.path.join(reports_dir, 'ttum_candidates.csv')
+                df_ttum.to_csv(ttum_path, index=False, encoding='utf-8')
+                logger.info(f"✅ Generated TTUM candidates report: {ttum_path} ({len(ttum_candidates)} records)")
+                assert os.path.exists(ttum_path), f"Failed to create {ttum_path}"
+            else:
+                logger.info("No TTUM candidates to report")
+            
+            # List all generated files
+            generated_files = os.listdir(reports_dir) if os.path.exists(reports_dir) else []
+            logger.info(f"✅ UPI reports generation completed. Files in {reports_dir}: {generated_files}")
+            
+        except Exception as e:
+            logger.error(f"Error generating UPI reports: {str(e)}", exc_info=True)
+            raise
+
     def generate_unmatched_ageing(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
         """Generate unmatched inward/outward CSVs with ageing buckets."""
         import os

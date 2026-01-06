@@ -238,8 +238,13 @@ class UPIReconciliationEngine:
         logger.info(f"Found {len(settlement_candidates)} settlement entries")
 
     def _step_4_double_debit_credit(self):
-        """Step 4: Double debit/credit detection"""
-        logger.info("Step 4: Detecting double debits/credits")
+        """Step 4: Double debit/credit detection with proper TTUM generation
+        
+        Detects transactions with multiple entries for same RRN in the same source,
+        which indicates potential double debit/credit scenarios. Marks them for
+        manual review and TTUM generation with REVERSAL type.
+        """
+        logger.info("Step 4: Detecting double debits/credits with proper TTUM handling")
 
         # Find same RRN with multiple debit/credit entries
         # Mark entire set as unmatched for manual review
@@ -249,15 +254,35 @@ class UPIReconciliationEngine:
             if 'RRN' in df.columns and not df['processed'].all():
                 rrn_groups = df[~df['processed']].groupby('RRN')
                 for rrn, group in rrn_groups:
-                    if len(group) > 1:  # Multiple entries for same RRN
+                    if len(group) > 1 and pd.notna(rrn) and rrn != '':  # Multiple entries for same RRN
+                        # Check if they have opposite Dr/Cr indicators (key indicator of double entry)
+                        dr_cr_values = group['Dr_Cr'].fillna('').astype(str).str.upper()
+                        has_dr = any(v.startswith('D') for v in dr_cr_values)
+                        has_cr = any(v.startswith('C') for v in dr_cr_values)
+                        
+                        # Mark all entries as unmatched for manual review
                         df.loc[group.index, 'processed'] = True
                         df.loc[group.index, 'match_status'] = 'UNMATCHED'
                         df.loc[group.index, 'exception_type'] = 'DOUBLE_DEBIT_CREDIT'
                         df.loc[group.index, 'ttum_required'] = True
-                        df.loc[group.index, 'ttum_type'] = 'REVERSAL'
+                        
+                        # Determine TTUM type based on characteristics
+                        if has_dr and has_cr:
+                            # Opposite entries - likely needs reversal
+                            df.loc[group.index, 'ttum_type'] = 'REVERSAL'
+                        else:
+                            # Same Dr/Cr multiple times - needs investigation
+                            df.loc[group.index, 'ttum_type'] = 'INVESTIGATION'
+                        
                         double_entries.extend(group.to_dict('records'))
+                        
+                        logger.info(f"Detected {len(group)} double debit/credit entries for RRN: {rrn} in {df_name}")
 
-        logger.info(f"Found {len(double_entries)} double debit/credit entries")
+        logger.info(f"Found {len(double_entries)} double debit/credit entries requiring TTUM")
+        
+        # Log summary for audit trail
+        if double_entries:
+            logger.warning(f"⚠️ {len(double_entries)} transactions need TTUM generation due to double debit/credit")
 
     def _step_5_normal_matching(self):
         """Step 5: Normal matching with configurable parameters"""
@@ -543,21 +568,34 @@ class UPIReconciliationEngine:
         return df['match_status'].value_counts().to_dict()
 
     def _get_exception_summary(self) -> Dict:
-        """Get summary of exceptions found with full transaction details"""
+        """Get summary of exceptions found with full transaction details and direction info"""
         all_exceptions = []
 
         for df, source in [(self.cbs_df, 'CBS'), (self.switch_df, 'SWITCH'), (self.npci_df, 'NPCI')]:
             exceptions = df[df['exception_type'].notna()]
             for _, row in exceptions.iterrows():
+                # Safe field extraction with fallback logic for alternative column names
+                rrn = self._extract_field(row, ['RRN', 'Reference_Number', 'Reference'])
+                amount = self._extract_amount(row)
+                date_val = self._extract_field(row, ['Date', 'Tran_Date', 'Transaction_Date', 'Tran_DateTime'])
+                time_val = self._extract_field(row, ['Time', 'Tran_Time', 'Transaction_Time'])
+                reference = self._extract_field(row, ['Reference_ID', 'Reference', 'UPI_Tran_ID', 'Transaction_ID'])
+                description = self._extract_field(row, ['Description', 'Narration', 'Remarks', 'Notes'])
+                debit_credit = self._extract_field(row, ['Debit_Credit', 'Dr_Cr', 'D_C', 'Type'])
+                
+                # Determine direction based on Dr_Cr
+                direction = self._determine_direction_from_dr_cr(debit_credit)
+                
                 exc_record = {
                     'source': source,
-                    'rrn': row.get('RRN'),
-                    'amount': float(row.get('Amount', 0)) if pd.notna(row.get('Amount')) else 0,
-                    'date': str(row.get('Date', '')) if pd.notna(row.get('Date')) else '',
-                    'time': str(row.get('Time', '')) if pd.notna(row.get('Time')) else '',
-                    'reference': str(row.get('Reference_ID', '')) if pd.notna(row.get('Reference_ID')) else '',
-                    'description': str(row.get('Description', '')) if pd.notna(row.get('Description')) else '',
-                    'debit_credit': str(row.get('Debit_Credit', '')) if pd.notna(row.get('Debit_Credit')) else '',
+                    'rrn': rrn,
+                    'amount': amount,
+                    'date': date_val,
+                    'time': time_val,
+                    'reference': reference,
+                    'description': description,
+                    'debit_credit': debit_credit,
+                    'direction': direction,
                     'exception_type': row.get('exception_type'),
                     'ttum_required': row.get('ttum_required', False),
                     'ttum_type': row.get('ttum_type')
@@ -565,6 +603,41 @@ class UPIReconciliationEngine:
                 all_exceptions.append(exc_record)
 
         return all_exceptions
+
+    def _determine_direction_from_dr_cr(self, debit_credit: str) -> str:
+        """Determine transaction direction (INWARD/OUTWARD) from Dr_Cr value"""
+        if not debit_credit:
+            return 'UNKNOWN'
+        
+        dr_cr_upper = debit_credit.strip().upper()
+        
+        # Credit (CR/C) = Inward (money coming in)
+        if dr_cr_upper.startswith('C'):
+            return 'INWARD'
+        # Debit (DR/D) = Outward (money going out)
+        elif dr_cr_upper.startswith('D'):
+            return 'OUTWARD'
+        
+        return 'UNKNOWN'
+
+    def _extract_field(self, row: pd.Series, possible_columns: List[str]) -> str:
+        """Extract value from row trying multiple possible column names"""
+        for col_name in possible_columns:
+            if col_name in row.index:
+                value = row.get(col_name)
+                if value is not None and pd.notna(value):
+                    return str(value).strip()
+        return ''
+
+    def _extract_amount(self, row: pd.Series) -> float:
+        """Extract amount safely from row"""
+        try:
+            amount = row.get('Amount', 0)
+            if pd.notna(amount):
+                return float(amount)
+        except (ValueError, TypeError):
+            pass
+        return 0.0
 
     def _get_ttum_candidates(self) -> List[Dict]:
         """Get all transactions requiring TTUM generation"""
@@ -772,9 +845,16 @@ class UPIReconciliationEngine:
         }
 
     def _apply_exception_handling_matrix(self):
-        """Apply exception handling matrix for remaining unprocessed transactions"""
+        """Apply exception handling matrix for remaining unprocessed transactions
+        
+        Uses EXCEPTION_MATRIX configuration to determine proper handling for each
+        combination of CBS/SWITCH/NPCI transaction statuses. Categorizes exceptions
+        and marks TTUM requirements.
+        """
         logger.info("Applying exception handling matrix for unprocessed transactions")
 
+        exception_count_by_type = {}
+        
         # Get unprocessed transactions
         unprocessed_cbs = self.cbs_df[~self.cbs_df['processed']]
         unprocessed_switch = self.switch_df[~self.switch_df['processed']]
@@ -783,7 +863,7 @@ class UPIReconciliationEngine:
         # Process each unprocessed CBS transaction
         for _, cbs_row in unprocessed_cbs.iterrows():
             rrn = cbs_row.get('RRN')
-            if pd.isna(rrn):
+            if pd.isna(rrn) or rrn == '':
                 continue
 
             # Find matching transactions in Switch and NPCI
@@ -802,8 +882,21 @@ class UPIReconciliationEngine:
             if combination_key in EXCEPTION_MATRIX:
                 actions = EXCEPTION_MATRIX[combination_key]
                 self._apply_exception_actions(cbs_row, switch_match, npci_match, actions, rrn)
+                
+                # Track exception types for summary
+                action_type = actions.get('action', 'UNMATCHED')
+                exception_count_by_type[action_type] = exception_count_by_type.get(action_type, 0) + 1
+            else:
+                # Mark as unmatched if no rule found
+                if not cbs_row['processed']:
+                    self.cbs_df.loc[cbs_row.name, 'processed'] = True
+                    self.cbs_df.loc[cbs_row.name, 'match_status'] = 'UNMATCHED'
+                    self.cbs_df.loc[cbs_row.name, 'exception_type'] = 'UNMATCHED_NO_RULE'
+                    logger.debug(f"RRN {rrn}: No matching rule in exception matrix for {combination_key}")
 
         logger.info("Exception handling matrix applied")
+        if exception_count_by_type:
+            logger.info(f"Exception counts by type: {exception_count_by_type}")
 
     def _find_matching_by_rrn(self, df: pd.DataFrame, rrn: str) -> Optional[pd.Series]:
         """Find matching record by RRN"""
@@ -836,24 +929,63 @@ class UPIReconciliationEngine:
 
     def _apply_exception_actions(self, cbs_row: pd.Series, switch_row: Optional[pd.Series],
                                 npci_row: Optional[pd.Series], actions: Dict, rrn: str):
-        """Apply exception actions based on matrix configuration"""
+        """Apply exception actions based on matrix configuration with proper TTUM generation
+        
+        Maps exception matrix actions to transaction marking and TTUM requirement decisions.
+        Ensures proper categorization for downstream processing.
+        """
         action_type = actions.get('action', 'UNMATCHED')
+        
+        logger.debug(f"Applying exception action {action_type} for RRN {rrn}")
 
         if action_type == 'MATCHED':
-            # Mark all as matched
+            # Mark all as matched - successful reconciliation
             self._mark_transaction_status(cbs_row, switch_row, npci_row, 'MATCHED', None, False, None)
+            
         elif action_type == 'REMITTER_REFUND':
-            # Mark CBS as requiring TTUM for remitter refund
-            self._mark_transaction_status(cbs_row, switch_row, npci_row, 'UNMATCHED', 'NPCI_FAILED', True, 'REVERSAL')
+            # CBS transaction failed at NPCI - needs remitter refund TTUM
+            # Mark CBS for TTUM generation
+            if cbs_row is not None and not self.cbs_df.loc[cbs_row.name, 'processed']:
+                self.cbs_df.loc[cbs_row.name, 'processed'] = True
+                self.cbs_df.loc[cbs_row.name, 'match_status'] = 'UNMATCHED'
+                self.cbs_df.loc[cbs_row.name, 'exception_type'] = 'NPCI_FAILED'
+                self.cbs_df.loc[cbs_row.name, 'ttum_required'] = True
+                self.cbs_df.loc[cbs_row.name, 'ttum_type'] = 'REVERSAL'
+                logger.info(f"RRN {rrn}: Marked CBS for REMITTER_REFUND TTUM")
+            
         elif action_type == 'BENEFICIARY_RECOVERY':
-            # Mark NPCI as requiring TTUM for beneficiary recovery
-            self._mark_transaction_status(cbs_row, switch_row, npci_row, 'UNMATCHED', 'BENEFICIARY_RECOVERY', True, 'BENEFICIARY_CREDIT')
+            # NPCI transaction succeeded but CBS not found - needs beneficiary credit TTUM
+            if npci_row is not None:
+                npci_idx = self.npci_df[
+                    (self.npci_df['RRN'] == rrn) & 
+                    (~self.npci_df['processed'])
+                ].index
+                if len(npci_idx) > 0:
+                    self.npci_df.loc[npci_idx, 'processed'] = True
+                    self.npci_df.loc[npci_idx, 'match_status'] = 'UNMATCHED'
+                    self.npci_df.loc[npci_idx, 'exception_type'] = 'BENEFICIARY_RECOVERY'
+                    self.npci_df.loc[npci_idx, 'ttum_required'] = True
+                    self.npci_df.loc[npci_idx, 'ttum_type'] = 'BENEFICIARY_CREDIT'
+                    logger.info(f"RRN {rrn}: Marked NPCI for BENEFICIARY_RECOVERY TTUM")
+            
         elif action_type == 'SWITCH_UPDATE':
-            # Mark Switch as requiring update
-            self._mark_transaction_status(cbs_row, switch_row, npci_row, 'UNMATCHED', 'SWITCH_UPDATE', False, None)
+            # Switch transaction needs update or manual investigation
+            if switch_row is not None:
+                switch_idx = self.switch_df[
+                    (self.switch_df['RRN'] == rrn) & 
+                    (~self.switch_df['processed'])
+                ].index
+                if len(switch_idx) > 0:
+                    self.switch_df.loc[switch_idx, 'processed'] = True
+                    self.switch_df.loc[switch_idx, 'match_status'] = 'UNMATCHED'
+                    self.switch_df.loc[switch_idx, 'exception_type'] = 'SWITCH_UPDATE'
+                    self.switch_df.loc[switch_idx, 'ttum_required'] = False
+                    logger.info(f"RRN {rrn}: Marked SWITCH for manual review/update")
+            
         else:
             # Default to unmatched
             self._mark_transaction_status(cbs_row, switch_row, npci_row, 'UNMATCHED', None, False, None)
+            logger.debug(f"RRN {rrn}: Marked as unmatched (default action)")
 
     def _mark_transaction_status(self, cbs_row: pd.Series, switch_row: Optional[pd.Series],
                                 npci_row: Optional[pd.Series], match_status: str, exception_type: Optional[str],
