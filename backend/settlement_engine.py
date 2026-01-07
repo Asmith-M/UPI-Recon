@@ -230,6 +230,63 @@ class SettlementEngine:
         except Exception:
             return {}
 
+    def _build_npci_rrn_map(self, run_folder: str) -> Dict[str, Dict[str, str]]:
+        """Build a lookup map from RRN -> {payer_psp, payee_psp} by scanning NPCI raw files under run_folder.
+        Supports CSV/XLS/XLSX with columns like 'RRN', 'Payer_PSP', 'Payee_PSP'.
+        """
+        mapping: Dict[str, Dict[str, str]] = {}
+        try:
+            import pandas as pd
+        except Exception:
+            return mapping
+
+        # search for NPCI files recursively
+        for root, dirs, files in os.walk(run_folder):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                fl = fname.lower()
+                if not any(x in fl for x in ['npci']):
+                    continue
+                if not fl.endswith(('.csv', '.xlsx', '.xls')):
+                    continue
+                try:
+                    if fl.endswith('.csv'):
+                        df = pd.read_csv(fpath)
+                    else:
+                        df = pd.read_excel(fpath)
+                    cols = {c: str(c).strip() for c in df.columns}
+                    # normalize column access
+                    def col(name_opts: List[str]) -> Optional[str]:
+                        for n in name_opts:
+                            if n in df.columns:
+                                return n
+                            # case-insensitive match
+                            for c in df.columns:
+                                if str(c).strip().lower() == n.lower():
+                                    return c
+                        return None
+                    rrn_col = col(['RRN', 'Reference_Number', 'Ref', 'Shser'])
+                    payer_col = col(['Payer_PSP', 'Payer', 'PayerPSP'])
+                    payee_col = col(['Payee_PSP', 'Payee', 'PayeePSP'])
+                    if not rrn_col:
+                        continue
+                    for _, row in df.iterrows():
+                        rrn_val = row.get(rrn_col)
+                        if rrn_val is None:
+                            continue
+                        rrn_str = str(rrn_val).strip()
+                        if not rrn_str:
+                            continue
+                        payer = row.get(payer_col) if payer_col else ''
+                        payee = row.get(payee_col) if payee_col else ''
+                        mapping[rrn_str] = {
+                            'payer_psp': '' if payer is None else str(payer).strip(),
+                            'payee_psp': '' if payee is None else str(payee).strip()
+                        }
+                except Exception:
+                    continue
+        return mapping
+
     def generate_vouchers_from_recon(self, recon_results: Dict, run_id: str) -> Dict:
         """
         Generate vouchers and GL entries from reconciliation results
@@ -512,13 +569,15 @@ class SettlementEngine:
         return []
 
     def generate_ttum_files(self, recon_results: Dict, run_folder: str) -> Dict:
-        """Generate NPCI-like TTUM CSVs (DRC, RRC, TCC, RET, RECOVERY, REFUND)
-        Generates a set of CSVs under run_folder/ttum and returns mapping of category->path.
-        This implements a closer Annexure-IV-like CSV format per TTUM category.
-        Fields (approx): InstructionType, InstructionRefNo, RRN, Amount, ValueDate, DrCr, RC, Tran_Type, AccountNo, IFSC, Narration, TTUM_Code
+        """Generate NPCI-compliant outputs with Annexure IV prioritized.
+
+        - Prioritize Annexure IV (strict 9-column schema) and generate it first.
+        - Also generate internal TTUM CSVs (InstructionType format) for backward compatibility.
+        - Extract Payer_PSP and Payee_PSP from NPCI raw files instead of placeholders.
+        - Ensure flags limited to {DRC, RRC, Cr Adj, TCC, RET}.
         """
         import csv
-        import json
+        import json as _json
         ttum_dir = os.path.join(run_folder, 'ttum')
         os.makedirs(ttum_dir, exist_ok=True)
 
@@ -526,13 +585,11 @@ class SettlementEngine:
         run_id = None
         cycle_id = None
         try:
-            # walk up components to find a folder starting with 'RUN_'
             parts = os.path.normpath(run_folder).split(os.path.sep)
             for p in parts[::-1]:
                 if p.startswith('RUN_'):
                     run_id = p
                     break
-            # find any 'cycle_<id>' component
             for p in parts:
                 if p.startswith('cycle_'):
                     cycle_id = p.split('cycle_', 1)[1]
@@ -541,249 +598,250 @@ class SettlementEngine:
             run_id = None
             cycle_id = None
 
-        categories = ['DRC', 'RRC', 'TCC', 'RET', 'RECOVERY', 'REFUND']
-        created = {}
-        annexure_records = []
+        # Build NPCI metadata map (RRN -> payer/payee PSP)
+        npci_meta = self._build_npci_rrn_map(run_folder)
 
-        # mapping from our internal category -> Annexure Flag
+        # Mandatory Annexure flags (exactly 5 as per NPCI spec)
+        ANNEX_FLAGS = {'DRC', 'RRC', 'Cr Adj', 'TCC', 'RET'}
+        # Updated flag mapping based on reconciliation status
         flag_map = {
-            'DRC': 'DRC',
-            'RRC': 'RRC',
-            'TCC': 'TCC',
-            'RET': 'RET',
-            'REFUND': 'CR',
-            'RECOVERY': 'DRC'
+            'MATCHED': None,  # No flag for matched transactions
+            'PARTIAL_MATCH': 'RRC',  # Manual reconciliation needed
+            'ORPHAN': 'DRC',  # Debit reversal
+            'MISMATCH': 'RRC',  # Manual review
+            'EXCEPTION': 'RET',  # Return/exception
+            'TCC_102': 'TCC',  # Technical credit
+            'TCC_103': 'TCC',  # Technical credit
+            'RB_SUCCESS': 'TCC'  # Deemed success
         }
 
-        # Helper to pick source record
+        # Helper to pick a representative source record
         def pick_source(rec):
             for s in ['cbs', 'switch', 'npci']:
                 if rec.get(s):
                     return rec[s]
             return {}
 
+        # Derive Annexure flag based on reconciliation status and transaction characteristics
+        def derive_flag(rec: Dict, src: Dict) -> Optional[str]:
+            status = rec.get('status')
+            rc = (src.get('rc') or '').strip().upper()
+            drcr = (src.get('dr_cr') or '').strip().upper()
+
+            # Priority 1: TCC for RB responses (Deemed Success)
+            if rc.startswith('RB'):
+                return 'TCC'
+
+            # Priority 2: TCC for technical credits
+            if rec.get('tcc') in ['TCC_102', 'TCC_103']:
+                return 'TCC'
+
+            # Priority 3: RET for exceptions and returns
+            if status == 'EXCEPTION' or rec.get('needs_ttum'):
+                return 'RET'
+
+            # Priority 4: Status-based flags for unmatched transactions
+            if status == 'PARTIAL_MATCH':
+                return 'RRC'  # Manual reconciliation needed
+            elif status == 'ORPHAN':
+                return 'DRC'  # Debit reversal
+            elif status == 'MISMATCH':
+                return 'RRC'  # Manual review required
+
+            # Priority 5: Dr/Cr based adjustments for other cases
+            if status in ['UNMATCHED', 'HANGING']:
+                if drcr.startswith('C'):
+                    return 'Cr Adj'  # Credit adjustment
+                elif drcr.startswith('D'):
+                    return 'DRC'  # Debit reversal
+
+            # No flag for matched transactions
+            if status == 'MATCHED':
+                return None
+
+            # Default fallback for undefined cases
+            return 'RRC'
+
+        # First generate Annexure-IV records (priority)
+        annexure_records: List[Dict] = []
+        for rrn, rec in recon_results.items():
+            if not isinstance(rec, dict):
+                continue
+            src = pick_source(rec)
+            if not src:
+                continue
+            amount = src.get('amount', '')
+            tran_date = src.get('date', '')
+            rc = src.get('rc', '')
+            rrn_str = str(src.get('RRN', rrn))
+            narration = f"RRN {rrn_str}"
+
+            # Normalize date to YYYY-MM-DD
+            shtdat = ''
+            try:
+                if tran_date:
+                    try:
+                        shtdat = datetime.fromisoformat(str(tran_date)).strftime('%Y-%m-%d')
+                    except Exception:
+                        try:
+                            shtdat = datetime.strptime(str(tran_date), '%Y-%m-%d').strftime('%Y-%m-%d')
+                        except Exception:
+                            shtdat = ''
+            except Exception:
+                shtdat = ''
+
+            # derive flag limited to the required set
+            flg = derive_flag(rec, src)
+            if not flg or flg not in ANNEX_FLAGS:
+                continue
+
+            payer = npci_meta.get(rrn_str, {}).get('payer_psp', '')
+            payee = npci_meta.get(rrn_str, {}).get('payee_psp', '')
+
+            # Build Annexure record with strict field set; FileName semantic as ANNEXURE for this run
+            annexure_records.append({
+                'Bankadjref': f"BR_{flg}_{rrn_str}_{int(datetime.now().timestamp())}",
+                'Flag': flg,
+                'shtdat': shtdat or datetime.now().strftime('%Y-%m-%d'),
+                'adjsmt': amount or '',
+                'Shser': payer or rrn_str,   # use Payer_PSP when present
+                'Shcrd': payee or f"NBIN{rrn_str}",  # use Payee_PSP when present
+                'FileName': f"ANNEXURE_{run_id or 'CURRENT'}.csv",
+                'reason': (rc or '')[:5],
+                'specifyother': narration[:400]
+            })
+
+        created: Dict[str, str] = {}
+        # Write Annexure-IV first (priority)
+        try:
+            if annexure_records:
+                # Prefer standardized writer with run scoping
+                if run_id:
+                    annex_path = generate_annexure_iv_csv(annexure_records, run_id=run_id, cycle_id=cycle_id)
+                else:
+                    # fallback path
+                    annex_path = os.path.join(ttum_dir, 'annexure_iv.csv')
+                    generate_annexure_iv_csv(annexure_records, annex_path)
+                created['ANNEXURE_IV'] = annex_path
+        except Exception as e:
+            logger.error(f"Failed to generate Annexure-IV CSV: {e}")
+
+        # Backward-compatible internal TTUM CSVs (InstructionType format)
+        categories = ['DRC', 'RRC', 'TCC', 'RET', 'RECOVERY', 'REFUND']
         for cat in categories:
-            # If we have a canonical run_id, prefer writing TTUMs via centralized reporting.write_report
             headers = [
                 'InstructionType', 'InstructionRefNo', 'RRN', 'Amount', 'ValueDate', 'DrCr', 'RC', 'Tran_Type',
                 'AccountNo', 'IFSC', 'Narration', 'TTUM_Code', 'GL_Debit_Account', 'GL_Credit_Account'
             ]
+            rows_for_cat: List[Dict] = []
 
-            rows_for_cat = []
             for rrn, rec in recon_results.items():
-                    if not isinstance(rec, dict):
-                        continue
-                    status = rec.get('status')
-                    src = pick_source(rec)
-                    amount = src.get('amount', '')
-                    tran_date = src.get('date', '')
-                    drcr = src.get('dr_cr', '')
-                    rc = src.get('rc', '')
-                    ttype = src.get('tran_type', '')
+                if not isinstance(rec, dict):
+                    continue
+                src = pick_source(rec)
+                if not src:
+                    continue
+                status = rec.get('status')
+                amount = src.get('amount', '')
+                tran_date = src.get('date', '')
+                drcr = src.get('dr_cr', '')
+                rc = src.get('rc', '')
+                ttype = src.get('tran_type', '')
+                rrn_str = str(src.get('RRN', rrn))
 
-                    # normalize rrn as string for lookup
-                    rrn_str = str(rrn)
-                    issuer_action = {}
-                    try:
-                        if self.issuer_actions and rrn_str in self.issuer_actions:
-                            issuer_action = self.issuer_actions.get(rrn_str, {}) or {}
-                    except Exception:
-                        issuer_action = {}
-
-                    # normalize value date to YYYYMMDD-ish where possible
-                    value_date = ''
-                    try:
-                        if tran_date:
-                            # attempt several formats
+                # Normalize value date to YYYYMMDD when possible
+                value_date = ''
+                try:
+                    if tran_date:
+                        try:
+                            value_date = datetime.fromisoformat(str(tran_date)).strftime('%Y%m%d')
+                        except Exception:
                             try:
-                                value_date = datetime.fromisoformat(tran_date).strftime('%Y%m%d')
+                                value_date = datetime.strptime(str(tran_date), '%Y-%m-%d').strftime('%Y%m%d')
                             except Exception:
-                                try:
-                                    value_date = datetime.strptime(tran_date, '%Y-%m-%d').strftime('%Y%m%d')
-                                except Exception:
-                                    value_date = tran_date
-                    except Exception:
-                        value_date = tran_date
+                                value_date = ''
+                except Exception:
+                    value_date = ''
 
-                    instr_type = cat
-                    instr_ref = f"TTUM_{cat}_{rrn}"
-                    narration = f"{cat} for {rrn}"
+                # Default GL mapping
+                gl_debit = self.gl_accounts.get('suspense_account', {}).get('code', '')
+                gl_credit = self.gl_accounts.get('settlement_payable', {}).get('code', '')
 
-                    # Default GL mapping (use settlement engine GL config)
+                # issuer overrides
+                issuer_action = {}
+                try:
+                    if self.issuer_actions and rrn_str in self.issuer_actions:
+                        issuer_action = self.issuer_actions.get(rrn_str, {}) or {}
+                except Exception:
+                    issuer_action = {}
+
+                if cat == 'REFUND' and status in ['ORPHAN', 'PARTIAL_MATCH', 'MISMATCH']:
+                    gl_debit = self.gl_accounts.get('settlement_payable', {}).get('code', '')
+                    gl_credit = self.gl_accounts.get('bank_account', {}).get('code', '')
+                    if issuer_action:
+                        action = (issuer_action.get('action_point') or '').lower()
+                        if 'refund' in action:
+                            out_gl = issuer_action.get('outward_payable')
+                            if out_gl and str(out_gl).strip():
+                                gl_credit = str(out_gl).strip()
+
+                if cat == 'RECOVERY' and status in ['ORPHAN', 'PARTIAL_MATCH', 'MISMATCH']:
+                    gl_debit = self.gl_accounts.get('bank_account', {}).get('code', '')
+                    gl_credit = self.gl_accounts.get('settlement_receivable', {}).get('code', '')
+                    if issuer_action:
+                        action = (issuer_action.get('action_point') or '').lower()
+                        if 'recovery' in action:
+                            out_gl = issuer_action.get('outward_payable')
+                            if out_gl and str(out_gl).strip():
+                                gl_credit = str(out_gl).strip()
+
+                if cat == 'TCC' and (rec.get('tcc') == 'TCC_103' or str(rc).upper().startswith('RB')):
                     gl_debit = self.gl_accounts.get('suspense_account', {}).get('code', '')
                     gl_credit = self.gl_accounts.get('settlement_payable', {}).get('code', '')
 
-
-                    # If issuer provides a specific outward/payable GL, use it as override
-                    try:
-                        if issuer_action and isinstance(issuer_action, dict):
-                            out_gl = issuer_action.get('outward_payable')
-                            if out_gl and str(out_gl).strip():
-                                # Use issuer outward GL for credit when action suggests outward/payable
-                                gl_credit = str(out_gl).strip()
-                    except Exception:
-                        pass
-
-                    # Determine TTUM-specific accounting mapping per functional rules
-                    if cat == 'REFUND' and status in ['ORPHAN', 'PARTIAL_MATCH', 'MISMATCH']:
+                if cat in ['DRC', 'RRC']:
+                    if str(drcr).upper().startswith('D'):
                         gl_debit = self.gl_accounts.get('settlement_payable', {}).get('code', '')
-                        # default remitter credit to bank_account unless issuer overrides
-                        gl_credit = self.gl_accounts.get('bank_account', {}).get('code', '')
-                        # issuer_action may explicitly indicate refund mapping
-                        if issuer_action and isinstance(issuer_action, dict):
-                            action = (issuer_action.get('action_point') or '').lower()
-                            if 'refund' in action:
-                                # if issuer outward_payable provided, use it as credit (payable)
-                                out_gl = issuer_action.get('outward_payable')
-                                if out_gl and str(out_gl).strip():
-                                    gl_credit = str(out_gl).strip()
-
-                    if cat == 'RECOVERY' and status in ['ORPHAN', 'PARTIAL_MATCH', 'MISMATCH']:
-                        gl_debit = self.gl_accounts.get('bank_account', {}).get('code', '')
-                        gl_credit = self.gl_accounts.get('settlement_receivable', {}).get('code', '')
-                        if issuer_action and isinstance(issuer_action, dict):
-                            action = (issuer_action.get('action_point') or '').lower()
-                            if 'recovery' in action:
-                                out_gl = issuer_action.get('outward_payable')
-                                if out_gl and str(out_gl).strip():
-                                    # for recovery use outward_payable as relevant accounting reference
-                                    gl_credit = str(out_gl).strip()
-
-                    if cat == 'TCC' and rec.get('tcc') == 'TCC_103':
+                        gl_credit = self.gl_accounts.get('suspense_account', {}).get('code', '')
+                    else:
                         gl_debit = self.gl_accounts.get('suspense_account', {}).get('code', '')
                         gl_credit = self.gl_accounts.get('settlement_payable', {}).get('code', '')
 
-                    if cat in ['DRC', 'RRC']:
-                        if str(drcr).upper().startswith('D'):
-                            gl_debit = self.gl_accounts.get('settlement_payable', {}).get('code', '')
-                            gl_credit = self.gl_accounts.get('suspense_account', {}).get('code', '')
-                        else:
-                            gl_debit = self.gl_accounts.get('suspense_account', {}).get('code', '')
-                            gl_credit = self.gl_accounts.get('settlement_payable', {}).get('code', '')
+                # Decide if record belongs to this TTUM category
+                include = False
+                if cat == 'TCC' and (rec.get('tcc') in ['TCC_102', 'TCC_103'] or str(rc).upper().startswith('RB')):
+                    include = True
+                elif cat in ['DRC', 'RRC'] and status in ['PARTIAL_MATCH', 'ORPHAN', 'MISMATCH']:
+                    include = True
+                elif cat in ['REFUND', 'RECOVERY'] and status in ['ORPHAN', 'PARTIAL_MATCH', 'MISMATCH'] and not (rec.get('tcc')):
+                    include = True
+                elif cat == 'RET' and (rec.get('needs_ttum') or status == 'EXCEPTION'):
+                    include = True
 
-                    # TCC generation: NPCI RC startswith RB
-                    if cat == 'TCC' and rc and str(rc).upper().startswith('RB'):
-                        row = [instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, 'TCC', gl_debit, gl_credit]
-                        rows_for_cat.append(dict(zip(headers, row)))
-                        # collect annexure row
-                        try:
-                            annex_flag = flag_map.get(cat, 'TCC')
-                            shtdat = ''
-                            # value_date may be YYYYMMDD, convert to YYYY-MM-DD when possible
-                            try:
-                                if value_date and len(value_date) == 8 and value_date.isdigit():
-                                    shtdat = datetime.strptime(value_date, '%Y%m%d').strftime('%Y-%m-%d')
-                            except Exception:
-                                shtdat = ''
-                            annexure_records.append({
-                                'Bankadjref': f"BR_{cat}_{rrn}_{int(datetime.now().timestamp())}",
-                                'Flag': annex_flag,
-                                'shtdat': shtdat or tran_date or '',
-                                'adjsmt': amount or '',
-                                'Shser': rrn,
-                                'Shcrd': f"NBIN{rrn}",
-                                'FileName': os.path.basename(path),
-                                'reason': rc or '',
-                                'specifyother': narration
-                            })
-                        except Exception:
-                            pass
+                if not include:
+                    continue
 
-                    # DRC/RRC for settlement differences (use PARTIAL_MATCH/ORPHAN/MISMATCH)
-                    if cat in ['DRC', 'RRC'] and status in ['PARTIAL_MATCH', 'ORPHAN', 'MISMATCH']:
-                        row = [instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, cat, gl_debit, gl_credit]
-                        rows_for_cat.append(dict(zip(headers, row)))
-                        # collect annexure row
-                        try:
-                            annex_flag = flag_map.get(cat, cat)
-                            shtdat = ''
-                            try:
-                                if value_date and len(value_date) == 8 and value_date.isdigit():
-                                    shtdat = datetime.strptime(value_date, '%Y%m%d').strftime('%Y-%m-%d')
-                            except Exception:
-                                shtdat = ''
-                            annexure_records.append({
-                                'Bankadjref': f"BR_{cat}_{rrn}_{int(datetime.now().timestamp())}",
-                                'Flag': annex_flag,
-                                'shtdat': shtdat or tran_date or '',
-                                'adjsmt': amount or '',
-                                'Shser': rrn,
-                                'Shcrd': f"NBIN{rrn}",
-                                'FileName': os.path.basename(path),
-                                'reason': rc or '',
-                                'specifyother': narration
-                            })
-                        except Exception:
-                            pass
+                payer = npci_meta.get(rrn_str, {}).get('payer_psp', '')
+                payee = npci_meta.get(rrn_str, {}).get('payee_psp', '')
+                # For internal file, put payer/payee PSPs into AccountNo/IFSC placeholders
+                account_no = payee or payer or ''
+                ifsc = payer or ''
+                instr_type = cat
+                instr_ref = f"TTUM_{cat}_{rrn_str}"
+                narration = f"{cat} for {rrn_str}"
 
-                    # REFUND/RECOVERY for outward/inward mismatches
-                    if cat in ['RECOVERY', 'REFUND'] and status in ['ORPHAN', 'PARTIAL_MATCH', 'MISMATCH']:
-                        # If issuer_action indicates Ignore or Hanging or No Action, skip
-                        skip_for_action = False
-                        if issuer_action and isinstance(issuer_action, dict):
-                            act = (issuer_action.get('action_point') or '').lower()
-                            if any(x in act for x in ['ignore', 'no action', 'hanging', 'hang', 'matched', 'both leg present']):
-                                skip_for_action = True
-                        if not skip_for_action:
-                            row = [instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', narration, cat, gl_debit, gl_credit]
-                            rows_for_cat.append(dict(zip(headers, row)))
-                            # collect annexure row (map REFUND->CR)
-                            try:
-                                annex_flag = flag_map.get(cat, 'CR')
-                                shtdat = ''
-                                try:
-                                    if value_date and len(value_date) == 8 and value_date.isdigit():
-                                        shtdat = datetime.strptime(value_date, '%Y%m%d').strftime('%Y-%m-%d')
-                                except Exception:
-                                    shtdat = ''
-                                annexure_records.append({
-                                    'Bankadjref': f"BR_{cat}_{rrn}_{int(datetime.now().timestamp())}",
-                                    'Flag': annex_flag,
-                                    'shtdat': shtdat or tran_date or '',
-                                    'adjsmt': amount or '',
-                                    'Shser': rrn,
-                                    'Shcrd': f"NBIN{rrn}",
-                                    'FileName': os.path.basename(path),
-                                    'reason': rc or '',
-                                    'specifyother': narration
-                                })
-                            except Exception:
-                                pass
+                row = [instr_type, instr_ref, rrn_str, amount, value_date, drcr, rc, ttype,
+                       account_no, ifsc, narration, cat, gl_debit, gl_credit]
+                rows_for_cat.append(dict(zip(headers, row)))
 
-                    # RET (returns) - NPCI failed but CBS success
-                    if cat == 'RET' and (rec.get('needs_ttum') or rec.get('status') == 'EXCEPTION'):
-                        row = [instr_type, instr_ref, rrn, amount, value_date, drcr, rc, ttype, '', '', f'RET for {rrn}', 'RET', gl_debit, gl_credit]
-                        rows_for_cat.append(dict(zip(headers, row)))
-                        try:
-                            annex_flag = flag_map.get(cat, 'RET')
-                            shtdat = ''
-                            try:
-                                if value_date and len(value_date) == 8 and value_date.isdigit():
-                                    shtdat = datetime.strptime(value_date, '%Y%m%d').strftime('%Y-%m-%d')
-                            except Exception:
-                                shtdat = ''
-                            annexure_records.append({
-                                'Bankadjref': f"BR_{cat}_{rrn}_{int(datetime.now().timestamp())}",
-                                'Flag': annex_flag,
-                                'shtdat': shtdat or tran_date or '',
-                                'adjsmt': amount or '',
-                                'Shser': rrn,
-                                'Shcrd': f"NBIN{rrn}",
-                                'FileName': os.path.basename(path),
-                                'reason': rc or '',
-                                'specifyother': f'RET for {rrn}'
-                            })
-                        except Exception:
-                            pass
-
-            # If we inferred a run_id, write via reporting utility (centralized output path), otherwise fallback to legacy file under run_folder
+            # Write out this TTUM category
             if run_id:
                 try:
                     outp = write_report(run_id, cycle_id, 'ttum', f"{cat.lower()}.csv", headers, rows_for_cat)
                     created[cat] = outp
+                    # Also provide XLSX
                     write_ttum_xlsx(run_id, cycle_id, f"{cat.lower()}", headers, rows_for_cat)
                 except Exception:
-                    # fallback: write directly into ttum_dir
                     path = os.path.join(ttum_dir, f"{cat.lower()}.csv")
                     with open(path, 'w', newline='', encoding='utf-8') as f:
                         writer = csv.writer(f)
@@ -800,66 +858,11 @@ class SettlementEngine:
                         writer.writerow([r.get(h, '') for h in headers])
                 created[cat] = path
 
-        # write index file
+        # write index file of created artifacts
         try:
             idx = os.path.join(ttum_dir, 'index.json')
             with open(idx, 'w') as jf:
-                json.dump({'generated': datetime.now().isoformat(), 'files': list(created.values())}, jf, indent=2)
-        except Exception:
-            pass
-
-        # Generate Annexure-IV CSV if we collected any records
-        try:
-            if annexure_records:
-                # Normalize annexure records to ensure mandatory fields (shtdat, adjsmt)
-                norm_recs = []
-                for rec in annexure_records:
-                    r = rec.copy()
-                    # ensure shtdat exists and is YYYY-MM-DD; fallback to today
-                    try:
-                        if not r.get('shtdat'):
-                            r['shtdat'] = datetime.now().strftime('%Y-%m-%d')
-                        else:
-                            try:
-                                r['shtdat'] = datetime.fromisoformat(str(r['shtdat'])).strftime('%Y-%m-%d')
-                            except Exception:
-                                try:
-                                    r['shtdat'] = datetime.strptime(str(r['shtdat']), '%Y-%m-%d').strftime('%Y-%m-%d')
-                                except Exception:
-                                    r['shtdat'] = datetime.now().strftime('%Y-%m-%d')
-                    except Exception:
-                        r['shtdat'] = datetime.now().strftime('%Y-%m-%d')
-
-                    # ensure adjsmt formatted to two decimals
-                    try:
-                        if r.get('adjsmt') is None or str(r.get('adjsmt')).strip() == '':
-                            r['adjsmt'] = '0.00'
-                        else:
-                            r['adjsmt'] = format(float(r['adjsmt']), '.2f')
-                    except Exception:
-                        r['adjsmt'] = '0.00'
-
-                    # ensure required string fields
-                    r['Bankadjref'] = str(r.get('Bankadjref') or f"BR_{int(datetime.now().timestamp())}")
-                    r['Shser'] = str(r.get('Shser') or '')
-                    r['Shcrd'] = str(r.get('Shcrd') or '')
-                    r['FileName'] = str(r.get('FileName') or os.path.basename(ttum_dir))
-                    # NPCI reason must be max 5 chars per Annexure-IV; truncate if longer
-                    r['reason'] = str(r.get('reason') or '')[:5]
-                    r['specifyother'] = str(r.get('specifyother') or '')
-
-                    norm_recs.append(r)
-
-                try:
-                    # Prefer to write Annexure via standardized reporting if we have run_id
-                    if run_id:
-                        annex_path = generate_annexure_iv_csv(norm_recs, run_id=run_id, cycle_id=cycle_id)
-                    else:
-                        annex_path = os.path.join(ttum_dir, 'annexure_iv.csv')
-                        generate_annexure_iv_csv(norm_recs, annex_path)
-                    created['ANNEXURE_IV'] = annex_path
-                except Exception as e:
-                    logger.error(f"Failed to generate Annexure-IV CSV: {e}")
+                _json.dump({'generated': datetime.now().isoformat(), 'files': list(created.values())}, jf, indent=2)
         except Exception:
             pass
 

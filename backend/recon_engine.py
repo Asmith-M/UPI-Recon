@@ -158,7 +158,7 @@ class ReconciliationEngine:
             raise ValueError(f"Data combination failed: {str(combine_error)}")
 
     def _perform_reconciliation_logic(self, combined_df: pd.DataFrame) -> Dict:
-        """This method contains the core reconciliation logic."""
+        """Enhanced reconciliation logic with improved matching, duplicate detection, and missing RRN handling."""
         results = {}
         try:
             # First: attempt matching by UPI_Tran_ID when RRN missing
@@ -171,10 +171,10 @@ class ReconciliationEngine:
                             key = f"UPI_{upi}"
                             record = self._create_record_structure()
                             self._populate_record_by_source(record, ugroup)
-                            # simple matching check
+                            # Enhanced matching check with tolerance for small amount differences
                             amounts = [record[s]['amount'] for s in SOURCES if record[s]]
                             dates = [record[s]['date'] for s in SOURCES if record[s]]
-                            if len(set(amounts)) == 1 and len(set(dates)) == 1 and len([s for s in SOURCES if record[s]]) >= 2:
+                            if self._enhanced_amount_match(amounts) and len(set(dates)) == 1 and len([s for s in SOURCES if record[s]]) >= 2:
                                 record['status'] = MATCHED
                                 self.matched_records.append(key)
                             else:
@@ -184,13 +184,8 @@ class ReconciliationEngine:
                         except Exception as e:
                             logger.warning(f"UPI grouping failed for {upi}: {e}")
 
-            # detect duplicates per RRN within each source
-            dup_rrns = []
-            for src in [CBS, SWITCH, NPCI]:
-                src_df = combined_df[combined_df[SOURCE].str.lower() == src]
-                counts = src_df[RRN].value_counts()
-                dups = counts[counts > 1].index.tolist()
-                dup_rrns.extend(dups)
+            # Enhanced duplicate detection: identify RRNs that appear multiple times within or across sources
+            duplicate_info = self._detect_comprehensive_duplicates(combined_df)
 
             grouped = combined_df.groupby(RRN)
             total_groups = len(grouped)
@@ -202,6 +197,17 @@ class ReconciliationEngine:
                     record = self._create_record_structure()
 
                     self._populate_record_by_source(record, group)
+
+                    # Check for comprehensive duplicates
+                    if rrn in duplicate_info:
+                        dup_type = duplicate_info[rrn]['type']
+                        record['status'] = DUPLICATE
+                        record['duplicate_info'] = duplicate_info[rrn]
+                        self.exceptions.append(rrn)
+                        results[rrn] = record
+                        logger.warning(f"Duplicate detected for RRN {rrn}: {dup_type}")
+                        continue
+
                     # Cut-off handling: if a declined txn has a reversal present (RC startswith 'RB'),
                     # mark as HANGING (declined with reversal in next/other cycle)
                     try:
@@ -215,41 +221,20 @@ class ReconciliationEngine:
                             continue
                     except Exception:
                         pass
-                    # Duplicate detection: same RRN multiple times in same source
-                    if rrn in dup_rrns:
-                        record['status'] = DUPLICATE
-                        self.exceptions.append(rrn)
+
+                    # Enhanced self-reversal detection: debit + credit same amount and date within any source
+                    if self._detect_self_reversal(group):
+                        record['status'] = MATCHED
+                        record['reversal_detected'] = True
+                        self.matched_records.append(rrn)
                         results[rrn] = record
                         continue
 
-                    # Self-reversal: debit + credit same amount and date within any source
-                    # Look for pairs in group
-                    if DR_CR in group.columns:
-                        # Normalize values
-                        try:
-                            grp = group.copy()
-                            grp['amount_num'] = pd.to_numeric(grp[AMOUNT], errors='coerce').fillna(0)
-                            grp['drcr'] = grp[DR_CR].astype(str).str.upper()
-                            # find matching debit-credit pairs
-                            for _, r1 in grp.iterrows():
-                                for _, r2 in grp.iterrows():
-                                    if r1[RRN] == r2[RRN] and r1['amount_num'] == r2['amount_num'] and r1['drcr'] != r2['drcr'] and r1[TRAN_DATE] == r2[TRAN_DATE]:
-                                        record['status'] = MATCHED
-                                        self.matched_records.append(rrn)
-                                        results[rrn] = record
-                                        raise StopIteration
-                        except StopIteration:
-                            continue
+                    # Enhanced record classification with better partial matching
+                    self._enhanced_classify_record(rrn, record, sources, group)
 
-                    self._classify_record(rrn, record, sources)
-
-                    # Hanging detection: CBS + SWITCH present, NPCI missing
-                    if record['status'] == ORPHAN and record.get(CBS) and record.get(SWITCH) and not record.get(NPCI):
-                        record['status'] = HANGING
-                        # add a hanging list for report
-                        if 'hanging_list' not in results:
-                            results['hanging_list'] = []
-                        results['hanging_list'].append(rrn)
+                    # Enhanced hanging detection with more scenarios
+                    self._enhanced_hanging_detection(rrn, record, results)
 
                     results[rrn] = record
 
@@ -261,8 +246,198 @@ class ReconciliationEngine:
         except Exception as logic_error:
             logger.error(f"Critical error in reconciliation logic: {str(logic_error)}")
             raise ValueError(f"Reconciliation logic failed: {str(logic_error)}")
-            
+
         return results
+
+    def _enhanced_amount_match(self, amounts: List) -> bool:
+        """Check if amounts match with tolerance for small differences."""
+        if len(amounts) < 2:
+            return False
+        amounts = [float(a) for a in amounts if a is not None and str(a).strip()]
+        if not amounts:
+            return False
+        # Check if all amounts are within 0.01 tolerance of each other
+        min_amt = min(amounts)
+        max_amt = max(amounts)
+        return abs(max_amt - min_amt) < 0.01
+
+    def _detect_comprehensive_duplicates(self, combined_df: pd.DataFrame) -> Dict:
+        """Detect RRNs that appear multiple times within or across sources."""
+        duplicate_info = {}
+
+        # Check for duplicates within each source
+        for src in [CBS, SWITCH, NPCI]:
+            src_df = combined_df[combined_df[SOURCE].str.lower() == src]
+            if not src_df.empty:
+                counts = src_df[RRN].value_counts()
+                for rrn, count in counts[counts > 1].items():
+                    if rrn not in duplicate_info:
+                        duplicate_info[rrn] = {'type': f'Multiple in {src.upper()} ({count} times)', 'sources': [src]}
+                    else:
+                        duplicate_info[rrn]['sources'].append(src)
+
+        # Check for cross-source duplicates (same RRN in multiple sources with different data)
+        rrn_groups = combined_df.groupby(RRN)
+        for rrn, group in rrn_groups:
+            if len(group) > 1:  # Multiple records for same RRN
+                sources = group[SOURCE].unique()
+                if len(sources) > 1:
+                    # Check if amounts or dates differ across sources
+                    amounts = group[AMOUNT].unique()
+                    dates = group[TRAN_DATE].unique()
+                    if len(amounts) > 1 or len(dates) > 1:
+                        duplicate_info[rrn] = {
+                            'type': 'Cross-source data mismatch',
+                            'sources': sources.tolist(),
+                            'amounts': amounts.tolist(),
+                            'dates': dates.tolist()
+                        }
+
+        return duplicate_info
+
+    def _detect_self_reversal(self, group: pd.DataFrame) -> bool:
+        """Enhanced self-reversal detection: debit + credit same amount and date within any source."""
+        if DR_CR not in group.columns:
+            return False
+
+        try:
+            grp = group.copy()
+            grp['amount_num'] = pd.to_numeric(grp[AMOUNT], errors='coerce').fillna(0)
+            grp['drcr'] = grp[DR_CR].astype(str).str.upper().str.strip()
+
+            # Group by source to check within each source
+            for source, src_group in grp.groupby(SOURCE):
+                if len(src_group) < 2:
+                    continue
+
+                # Find debit-credit pairs with same amount and date
+                debits = src_group[src_group['drcr'].isin(['D', 'DEBIT'])]
+                credits = src_group[src_group['drcr'].isin(['C', 'CREDIT'])]
+
+                for _, debit_row in debits.iterrows():
+                    for _, credit_row in credits.iterrows():
+                        if (debit_row['amount_num'] == credit_row['amount_num'] and
+                            debit_row[TRAN_DATE] == credit_row[TRAN_DATE]):
+                            return True
+        except Exception:
+            pass
+        return False
+
+    def _enhanced_classify_record(self, rrn: str, record: Dict, sources: set, group: pd.DataFrame):
+        """Enhanced record classification with better partial matching."""
+        amounts = [record[s]['amount'] for s in SOURCES if record[s]]
+        dates = [record[s]['date'] for s in SOURCES if record[s]]
+
+        num_sources = len(sources)
+        amounts_match = self._enhanced_amount_match(amounts)
+        dates_match = len(set(dates)) == 1
+
+        if num_sources == 3:
+            if amounts_match and dates_match:
+                record['status'] = MATCHED
+                self.matched_records.append(rrn)
+            else:
+                record['status'] = MISMATCH
+                self.exceptions.append(rrn)
+        elif num_sources == 2:
+            if amounts_match and dates_match:
+                record['status'] = PARTIAL_MATCH
+                self.partial_match_records.append(rrn)
+            else:
+                record['status'] = PARTIAL_MISMATCH
+                self.exceptions.append(rrn)
+        elif num_sources == 1:
+            record['status'] = ORPHAN
+            self.orphan_records.append(rrn)
+        else:
+            record['status'] = UNKNOWN
+            self.exceptions.append(rrn)
+
+        # Enhanced TCC rules with better logic
+        try:
+            npc = record.get(NPCI)
+            cbs = record.get(CBS)
+            if npc and str(npc.get('rc','')).upper().startswith('RB'):
+                if cbs and str(cbs.get('dr_cr','')).upper().startswith('C'):
+                    record['tcc'] = 'TCC_102'
+                else:
+                    record['tcc'] = 'TCC_103'
+                    record['needs_ttum'] = True
+        except Exception:
+            pass
+
+        # Enhanced NTSL Settlement matching
+        try:
+            ntsl_rec = record.get(NTSL)
+            if ntsl_rec:
+                ntsl_amt = float(str(ntsl_rec.get('amount') or 0) or 0)
+                gl_amt = None
+                if cbs and cbs.get('amount') is not None:
+                    gl_amt = float(cbs.get('amount') or 0)
+                elif record.get(SWITCH) and record.get(SWITCH).get('amount') is not None:
+                    gl_amt = float(record.get(SWITCH).get('amount') or 0)
+                elif record.get(NPCI) and record.get(NPCI).get('amount') is not None:
+                    gl_amt = float(record.get(NPCI).get('amount') or 0)
+
+                if gl_amt is not None and abs(ntsl_amt - gl_amt) < 0.01:
+                    record['status'] = MATCHED
+                    record['settlement_matched'] = True
+                    if rrn not in self.matched_records:
+                        self.matched_records.append(rrn)
+        except Exception:
+            pass
+
+        # Enhanced failed transaction handling
+        try:
+            if npc:
+                rc_val = str(npc.get('rc','')).upper()
+                success_codes = ['00', '0', 'SUCCESS', 'S', 'APPROVED', 'A']
+                if rc_val not in success_codes and rc_val:
+                    if cbs and str(cbs.get('rc','')).upper() in success_codes:
+                        record['status'] = 'EXCEPTION'
+                        record['exception_reason'] = 'NPCI failed but CBS successful'
+                        self.exceptions.append(rrn)
+        except Exception:
+            pass
+
+    def _enhanced_hanging_detection(self, rrn: str, record: Dict, results: Dict):
+        """Enhanced hanging detection with more scenarios."""
+        # Basic hanging: CBS + SWITCH present, NPCI missing
+        if record.get(CBS) and record.get(SWITCH) and not record.get(NPCI):
+            if record['status'] == ORPHAN:
+                record['status'] = HANGING
+                record['hanging_reason'] = 'CBS and SWITCH present, NPCI missing'
+                if 'hanging_list' not in results:
+                    results['hanging_list'] = []
+                results['hanging_list'].append(rrn)
+
+        # Advanced hanging: Amount mismatch between CBS and SWITCH
+        elif record.get(CBS) and record.get(SWITCH):
+            try:
+                cbs_amt = float(record[CBS].get('amount') or 0)
+                switch_amt = float(record[SWITCH].get('amount') or 0)
+                if abs(cbs_amt - switch_amt) > 0.01:  # Significant difference
+                    record['status'] = HANGING
+                    record['hanging_reason'] = f'Amount mismatch: CBS={cbs_amt}, SWITCH={switch_amt}'
+                    if 'hanging_list' not in results:
+                        results['hanging_list'] = []
+                    results['hanging_list'].append(rrn)
+            except Exception:
+                pass
+
+        # Date mismatch hanging
+        elif record.get(CBS) and record.get(SWITCH):
+            try:
+                cbs_date = str(record[CBS].get('date') or '').strip()
+                switch_date = str(record[SWITCH].get('date') or '').strip()
+                if cbs_date and switch_date and cbs_date != switch_date:
+                    record['status'] = HANGING
+                    record['hanging_reason'] = f'Date mismatch: CBS={cbs_date}, SWITCH={switch_date}'
+                    if 'hanging_list' not in results:
+                        results['hanging_list'] = []
+                    results['hanging_list'].append(rrn)
+            except Exception:
+                pass
 
     def _create_record_structure(self) -> Dict:
         """Creates a new, empty record structure."""
@@ -530,11 +705,50 @@ class ReconciliationEngine:
             except Exception as e:
                 logger.error(f"Failed to write report {name}: {e}")
 
+        # Generate all comprehensive reports
+        try:
+            self.generate_all_comprehensive_reports(results, run_folder, run_id, cycle_id)
+        except Exception as e:
+            logger.warning(f"Failed to generate comprehensive reports: {e}")
+
         # Also generate switch update file (best-effort from results)
         try:
             self.generate_switch_update_file(results, reports_dir, run_id=run_id)
         except Exception:
             pass
+
+    def generate_all_comprehensive_reports(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
+        """Generate all comprehensive reports required by the system.
+        
+        Generates:
+        - GL vs Switch - Matched Transactions (Inward/Outward)
+        - GL vs Switch - Unmatched Transactions with ageing (Inward/Outward)
+        - Switch vs Network - Matched Transactions (Inward/Outward)
+        - Switch vs Network - Unmatched Transactions with ageing (Inward/Outward)
+        - GL vs Network - Matched Transactions (Inward/Outward)
+        - GL vs Network - Unmatched Transactions with ageing (Inward/Outward)
+        - Hanging Transactions (Inward/Outward)
+        """
+        try:
+            # Generate unmatched ageing reports
+              self._generate_unmatched_ageing_reports(results, run_folder, run_id, cycle_id)
+            logger.info("Generated unmatched ageing reports")
+        except Exception as e:
+            logger.warning(f"Failed to generate unmatched ageing reports: {e}")
+        
+        try:
+            # Generate hanging transaction reports
+            self.generate_hanging_reports(results, run_folder, run_id, cycle_id)
+            logger.info("Generated hanging transaction reports")
+        except Exception as e:
+            logger.warning(f"Failed to generate hanging transaction reports: {e}")
+        
+        try:
+            # Generate adjustments/annexure reports
+            self._generate_adjustments_reports(results, run_folder, run_id, cycle_id)
+            logger.info("Generated adjustments/annexure reports")
+        except Exception as e:
+            logger.warning(f"Failed to generate adjustments reports: {e}")
 
     def generate_upi_report(self, upi_results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
         """Generate CSV reports from UPI reconciliation results
@@ -793,6 +1007,14 @@ class ReconciliationEngine:
             write_report(run_id, cycle_id, 'reports', 'Hanging_Outward.csv', hanging_headers, rows_out)
         except Exception:
             write_report(run_id, cycle_id, 'reports', 'Hanging_Outward.csv', hanging_headers, [])
+
+    def _generate_unmatched_ageing_reports(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
+        """Generate unmatched inward/outward CSVs with ageing buckets."""
+        self.generate_unmatched_ageing(results, run_folder, run_id, cycle_id)
+
+    def _generate_adjustments_reports(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
+        """Generate ANNEXURE-IV style adjustments CSV using annexure_iv helper."""
+        self.generate_adjustments_csv(results, run_folder, run_id, cycle_id)
 
     def generate_adjustments_csv(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
         """Generate ANNEXURE-IV style adjustments CSV using annexure_iv helper.
@@ -1241,49 +1463,7 @@ DETAILED ANALYSIS:
 
         return report_path
 
-    def generate_unmatched_ageing(self, results: Dict, run_folder: str) -> str:
-        """Generate unmatched.csv with ageing buckets (0-7,8-30,>30)"""
-        import csv
-        from datetime import datetime
 
-        unmatched = self.partial_match_records + self.orphan_records
-        if not unmatched:
-            return ''
-
-        path = os.path.join(run_folder, 'unmatched_ageing.csv')
-        try:
-            with open(path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['RRN', 'Amount', 'Tran_Date', 'AgeDays', 'Bucket', 'Status'])
-                for rrn in unmatched:
-                    rec = results.get(rrn, {})
-                    # pick a date from available sources
-                    date_str = ''
-                    amount = ''
-                    for s in [CBS, SWITCH, NPCI]:
-                        if rec.get(s):
-                            date_str = rec[s].get('date','')
-                            amount = rec[s].get('amount','')
-                            break
-                    try:
-                        if date_str:
-                            dt = datetime.fromisoformat(date_str)
-                        else:
-                            dt = datetime.now()
-                        age = (datetime.now() - dt).days
-                    except Exception:
-                        age = 0
-                    if age <= 7:
-                        bucket = '0-7'
-                    elif age <= 30:
-                        bucket = '8-30'
-                    else:
-                        bucket = '>30'
-                    writer.writerow([rrn, amount, date_str, age, bucket, rec.get('status','')])
-        except Exception as e:
-            logger.warning(f"Failed to write unmatched_ageing.csv: {e}")
-            return ''
-        return path
     
     def generate_adjustments_csv(self, results: Dict, run_folder: str) -> str:
         """Generate adjustments.csv for Force Match UI - handles both legacy and UPI format"""

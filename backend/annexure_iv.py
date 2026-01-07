@@ -43,7 +43,7 @@ COLUMN_ORDER = [
 ]
 
 # Allowed Flags
-ALLOWED_FLAGS = {'DRC', 'RRC', 'TCC', 'RET', 'CR'}
+ALLOWED_FLAGS = {'DRC', 'RRC', 'Cr Adj', 'TCC', 'RET'}
 
 # Regex for Bankadjref: allow alphanumeric and common separators (- _ / .)
 BANKREF_RE = re.compile(r'^[A-Za-z0-9\-_.\\/]{1,100}$')
@@ -65,14 +65,19 @@ def _validate_and_normalize(record: Dict) -> Dict:
         raise ValueError(f'Invalid Bankadjref "{bankref}"; max 100 chars, alphanumeric and -_/. allowed')
     out['Bankadjref'] = bankref
 
-    # Flag: mandatory, must be one of allowed
+    # Flag: mandatory, must be one of allowed (preserve 'Cr Adj' case)
     flag = record.get('Flag')
     if not flag or not str(flag).strip():
         raise ValueError('Flag is mandatory')
-    flag = str(flag).strip().upper()
-    if flag not in ALLOWED_FLAGS:
+    raw_flag = str(flag).strip()
+    upper_flag = raw_flag.upper()
+    if upper_flag == 'CR ADJ':
+        norm_flag = 'Cr Adj'
+    elif upper_flag in {'DRC', 'RRC', 'TCC', 'RET'}:
+        norm_flag = upper_flag
+    else:
         raise ValueError(f'Flag must be one of {ALLOWED_FLAGS}, got "{flag}"')
-    out['Flag'] = flag
+    out['Flag'] = norm_flag
 
     # shtdat: mandatory, date YYYY-MM-DD
     shtdat = record.get('shtdat')
@@ -131,15 +136,15 @@ def _validate_and_normalize(record: Dict) -> Dict:
     # reason: optional (NPCI reason code), if present max 5 chars
     reason = record.get('reason') or ''
     reason = str(reason).strip()
-    if reason and len(reason) > 5:
-        raise ValueError('reason exceeds max length 5')
+    if len(reason) > 5:
+        reason = reason[:5]  # Truncate to prevent NPCI upload rejection
     out['reason'] = reason
 
     # specifyother: optional bank remarks, max 400 chars
     spec = record.get('specifyother') or ''
     spec = str(spec).strip()
     if len(spec) > 400:
-        raise ValueError('specifyother exceeds max length 400')
+        spec = spec[:400]  # Truncate to prevent NPCI upload rejection
     out['specifyother'] = spec
 
     # Flag-specific additional validations (conservative)

@@ -4,17 +4,23 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Upload, Loader2, CheckCircle } from "lucide-react";
 import { useToast } from "../hooks/use-toast";
 import { useMutation } from "@tanstack/react-query";
 import { apiClient } from "../lib/api";
+import CycleSelector from "../components/CycleSelector";
+import DirectionSelector from "../components/DirectionSelector";
 
 export default function FileUpload() {
   const { toast } = useToast();
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedCycle, setSelectedCycle] = useState("");
+  const [selectedDirection, setSelectedDirection] = useState("");
   const [cbsInward, setCbsInward] = useState<File | null>(null);
   const [cbsOutward, setCbsOutward] = useState<File | null>(null);
   const [cbsBalance, setCbsBalance] = useState("");
+  const [cbsBalanceInput, setCbsBalanceInput] = useState("");
   const [switchFile, setSwitchFile] = useState<File | null>(null);
   const [npciFiles, setNpciFiles] = useState<Record<string, File>>({});
   const [selectedCycles, setSelectedCycles] = useState<Record<string, string>>({});
@@ -22,6 +28,13 @@ export default function FileUpload() {
 
   const uploadMutation = useMutation({
     mutationFn: async () => {
+      // Validate mandatory fields
+      if (!selectedCycle || selectedCycle === "all") {
+        throw new Error("Please select a Cycle (1-10)");
+      }
+      if (!selectedDirection || selectedDirection === "all") {
+        throw new Error("Please select a Direction (Inward/Outward)");
+      }
       if (!cbsInward || !cbsOutward || !switchFile) {
         throw new Error("Please select all required files (CBS Inward, CBS Outward, and Switch)");
       }
@@ -31,8 +44,10 @@ export default function FileUpload() {
         cbs_inward: cbsInward,
         cbs_outward: cbsOutward,
         switch: switchFile,
-        cbs_balance: cbsBalance,
+        cbs_balance: cbsBalance || cbsBalanceInput,
         transaction_date: date,
+        cycle: selectedCycle,
+        direction: selectedDirection,
         selected_cycles: selectedCycles,
       };
 
@@ -149,20 +164,77 @@ export default function FileUpload() {
           </TabsTrigger>
         </TabsList>
 
-        {/* CBS/GL File Tab */}
-        <TabsContent value="cbs">
-          <div className="space-y-6 mt-6">
-            <div className="flex justify-end">
+        {/* Mandatory Fields Card */}
+        <Card className="shadow-lg mt-6">
+          <CardContent className="pt-6">
+            <div className="grid grid-cols-4 gap-4">
               <div className="space-y-2">
-                <Label>Date:</Label>
+                <Label className="text-base font-semibold">Cycle (1-10) *</Label>
+                <CycleSelector 
+                  value={selectedCycle} 
+                  onValueChange={setSelectedCycle}
+                />
+                {!selectedCycle && (
+                  <p className="text-xs text-red-500">Required field</p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label className="text-base font-semibold">Direction *</Label>
+                <DirectionSelector 
+                  value={selectedDirection} 
+                  onValueChange={setSelectedDirection}
+                />
+                {!selectedDirection && (
+                  <p className="text-xs text-red-500">Required field</p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label className="text-base font-semibold">Transaction Date</Label>
                 <Input
                   type="date"
                   value={date}
                   onChange={(e) => setDate(e.target.value)}
-                  className="w-64"
+                  className="w-full"
                 />
-                <p className="text-xs text-muted-foreground">(Default Set to 'T' Day)</p>
               </div>
+              <div className="space-y-2">
+                <Label className="text-base font-semibold">CBS Closing Balance</Label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    placeholder="Enter balance"
+                    value={cbsBalanceInput}
+                    onChange={(e) => setCbsBalanceInput(e.target.value)}
+                    className="flex-1"
+                  />
+                  <Button
+                    variant="outline"
+                    className="rounded-full"
+                    onClick={() => setCbsBalance(cbsBalanceInput)}
+                  >
+                    Update
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* CBS/GL File Tab */}
+        <TabsContent value="cbs">
+          <div className="space-y-6 mt-6">
+            <div className="text-sm text-muted-foreground">
+              <p>Upload your CBS (Core Banking System) and GL (General Ledger) files for reconciliation.</p>
+            </div>
+            <div className="space-y-2">
+              <Label>Date:</Label>
+              <Input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="w-64"
+              />
+              <p className="text-xs text-muted-foreground">(Default Set to 'T' Day)</p>
             </div>
 
             <Card className="shadow-lg">
@@ -309,9 +381,14 @@ export default function FileUpload() {
           </div>
         </TabsContent>
 
-        {/* NPCI Files Tab */}
+        {/* NPCI Files Tab - Secondary / Fall-back Upload Mode */}
         <TabsContent value="npci">
           <div className="space-y-6 mt-6">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <p className="text-sm text-amber-900">
+                <strong>Secondary / Fall-back Upload Mode:</strong> Use this section to upload NPCI files as an alternative or backup method. NPCI files are optional and support multiple cycles (1-10).
+              </p>
+            </div>
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
               <p className="text-sm text-blue-900">
                 <strong>Note:</strong> NPCI files are optional. You can upload any combination of NPCI Inward, NPCI Outward, NTSL, and Adjustment files.

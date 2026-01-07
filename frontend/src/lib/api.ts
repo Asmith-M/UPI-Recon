@@ -280,6 +280,65 @@ export const apiClient = {
     return response;
   },
 
+  // TTUM Downloads
+  downloadTTUMCSV: async (runId?: string, cycleId?: string): Promise<AxiosResponse<Blob>> => {
+    const params: any = {};
+    if (runId) params.run_id = runId;
+    if (cycleId) params.cycle_id = cycleId;
+
+    const response: AxiosResponse<Blob> = await api.get(
+      '/api/v1/reports/ttum/csv',
+      {
+        params,
+        responseType: 'blob',
+      }
+    );
+    return response;
+  },
+
+  downloadTTUMXLSX: async (runId?: string, cycleId?: string): Promise<AxiosResponse<Blob>> => {
+    const params: any = {};
+    if (runId) params.run_id = runId;
+    if (cycleId) params.cycle_id = cycleId;
+
+    const response: AxiosResponse<Blob> = await api.get(
+      '/api/v1/reports/ttum/xlsx',
+      {
+        params,
+        responseType: 'blob',
+      }
+    );
+    return response;
+  },
+
+  downloadTTUMMerged: async (runId?: string, format: 'csv' | 'xlsx' = 'xlsx'): Promise<AxiosResponse<Blob>> => {
+    const params: any = {
+      format,
+    };
+    if (runId) params.run_id = runId;
+
+    const response: AxiosResponse<Blob> = await api.get(
+      '/api/v1/reports/ttum/merged',
+      {
+        params,
+        responseType: 'blob',
+      }
+    );
+    return response;
+  },
+
+  // Helper function to trigger file download
+  triggerFileDownload: (blob: Blob, filename: string): void => {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  },
+
   // Rollback Operations (Phase 3)
   rollbackWholeProcess: async (runId: string, reason: string = "User initiated whole process rollback"): Promise<any> => {
     const response: AxiosResponse = await api.post(

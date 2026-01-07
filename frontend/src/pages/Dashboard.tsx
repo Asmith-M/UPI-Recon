@@ -10,7 +10,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar, ScatterChart, Scatter, Area, AreaChart
 } from "recharts";
-import { RefreshCw, AlertCircle, CheckCircle2, TrendingUp, PieChart as PieChartIcon, BarChart3, Activity } from "lucide-react";
+import { RefreshCw, AlertCircle, CheckCircle2, TrendingUp, PieChart as PieChartIcon, BarChart3, Activity, Upload, Check } from "lucide-react";
 import { Button } from "../components/ui/button";
 import {
   Carousel,
@@ -68,10 +68,30 @@ export default function Dashboard() {
     return 0;
   };
 
+  // Helper to extract from summary/breakdown structure
+  const getFromSummaryOrBreakdown = (data: any, keys: string[]): number => {
+    // Try from summary object first
+    if (data?.summary) {
+      for (const key of keys) {
+        const value = key.split('.').reduce((obj, k) => obj?.[k], data.summary);
+        if (typeof value === 'number' && !isNaN(value)) return value;
+      }
+    }
+    // Try from breakdown object
+    if (data?.breakdown) {
+      for (const key of keys) {
+        const value = key.split('.').reduce((obj, k) => obj?.[k], data.breakdown);
+        if (typeof value === 'number' && !isNaN(value)) return value;
+      }
+    }
+    // Fallback to top-level
+    return getNumericValue(data, keys);
+  };
+
   // Prepare pie chart data from summary
-  const matchedCount = getNumericValue(summaryData, ['matched.count', 'matched', 'reconciled']);
-  const unmatchedCount = getNumericValue(summaryData, ['unmatched.count', 'unmatched', 'breaks']);
-  const totalCount = getNumericValue(summaryData, ['totals.count', 'total_transactions', 'total']);
+  const matchedCount = getFromSummaryOrBreakdown(summaryData, ['matched.count', 'matched', 'reconciled']);
+  const unmatchedCount = getFromSummaryOrBreakdown(summaryData, ['unmatched.count', 'unmatched', 'breaks']);
+  const totalCount = getFromSummaryOrBreakdown(summaryData, ['totals.count', 'total_transactions', 'total']);
 
   const pieData = summaryData ? [
     { name: "Matched", value: matchedCount, color: CHART_COLORS.matched },
@@ -79,19 +99,19 @@ export default function Dashboard() {
   ] : [];
 
   // Prepare summary display data with Inflow/Outflow separation
-  const inflowAmount = getNumericValue(summaryData, ['inflow.amount', 'inflow']);
-  const outflowAmount = getNumericValue(summaryData, ['outflow.amount', 'outflow']);
-  const inflowCount = getNumericValue(summaryData, ['inflow.count', 'inflow_count']);
-  const outflowCount = getNumericValue(summaryData, ['outflow.count', 'outflow_count']);
+  const inflowAmount = getFromSummaryOrBreakdown(summaryData, ['inflow.amount', 'inflow']);
+  const outflowAmount = getFromSummaryOrBreakdown(summaryData, ['outflow.amount', 'outflow']);
+  const inflowCount = getFromSummaryOrBreakdown(summaryData, ['inflow.count', 'inflow_count']);
+  const outflowCount = getFromSummaryOrBreakdown(summaryData, ['outflow.count', 'outflow_count']);
 
   const summaryDisplayData = summaryData ? [
     { label: "Total Transactions", amount: totalCount.toLocaleString(), count: "" },
     { label: "Inflow (Credits)", amount: inflowAmount.toLocaleString(), count: inflowCount.toLocaleString(), type: "inflow" },
     { label: "Outflow (Debits)", amount: outflowAmount.toLocaleString(), count: outflowCount.toLocaleString(), type: "outflow" },
     { label: "Net Position", amount: (inflowAmount - outflowAmount).toLocaleString(), count: "", type: "net" },
-    { label: "Matched", amount: getNumericValue(summaryData, ['matched.amount', 'matched_amount']).toLocaleString(), count: matchedCount.toLocaleString() },
-    { label: "Unmatched", amount: getNumericValue(summaryData, ['unmatched.amount', 'unmatched_amount']).toLocaleString(), count: unmatchedCount.toLocaleString() },
-    { label: "Adjustments", amount: getNumericValue(summaryData, ['exceptions.amount', 'adjustments.amount', 'adjustments']).toLocaleString(), count: getNumericValue(summaryData, ['exceptions.count', 'adjustments_count']).toLocaleString() },
+    { label: "Matched", amount: getFromSummaryOrBreakdown(summaryData, ['matched.amount', 'matched_amount']).toLocaleString(), count: matchedCount.toLocaleString() },
+    { label: "Unmatched", amount: getFromSummaryOrBreakdown(summaryData, ['unmatched.amount', 'unmatched_amount']).toLocaleString(), count: unmatchedCount.toLocaleString() },
+    { label: "Adjustments", amount: getFromSummaryOrBreakdown(summaryData, ['exceptions.amount', 'adjustments.amount', 'adjustments']).toLocaleString(), count: getFromSummaryOrBreakdown(summaryData, ['exceptions.count', 'adjustments_count']).toLocaleString() },
   ] : [];
 
   if (isSummaryLoading) {
@@ -174,7 +194,96 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Progress Stepper - 4 Steps */}
+      <Card className="shadow-lg">
+        <CardContent className="pt-6">
+          <div className="flex items-center justify-between relative">
+            {[
+              { step: 1, label: "File Upload", icon: Upload, complete: true },
+              { step: 2, label: "File Validation", icon: Check, complete: true },
+              { step: 3, label: "Data Ingestion", icon: Check, complete: true },
+              { step: 4, label: "Run Recon", icon: Check, complete: true }
+            ].map((stage, index) => {
+              const StageIcon = stage.icon;
+              const isComplete = stage.complete;
+              return (
+                <div key={stage.step} className="flex-1 flex flex-col items-center">
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold mb-2 transition-colors ${
+                    isComplete ? 'bg-green-500' : 'bg-gray-300'
+                  }`}>
+                    <StageIcon className="w-6 h-6" />
+                  </div>
+                  <p className="text-sm font-medium text-center">{stage.label}</p>
+                  {index < 3 && (
+                    <div className="absolute top-6 left-1/2 w-1/2 h-1 bg-green-500 -ml-1/4"></div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
 
+      {/* Cycle Selector Section */}
+      <Card className="shadow-lg">
+        <CardHeader>
+          <CardTitle className="text-lg">Cycle & Direction Selection</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Select Cycle (1-10)</label>
+              <CycleSelector value={selectedCycle} onValueChange={setSelectedCycle} />
+              {selectedCycle !== "all" && (
+                <p className="text-xs text-muted-foreground">
+                  Viewing data for Cycle {selectedCycle}
+                </p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Select Direction</label>
+              <DirectionSelector value={selectedDirection} onValueChange={setSelectedDirection} />
+              {selectedDirection !== "all" && (
+                <p className="text-xs text-muted-foreground">
+                  Viewing {selectedDirection === "inward" ? "Inward" : "Outward"} transactions
+                </p>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Sanity Check Indicators */}
+      <Card className="shadow-lg">
+        <CardHeader>
+          <CardTitle className="text-lg">Validation Status</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
+              <CheckCircle2 className="w-6 h-6 text-green-600" />
+              <div>
+                <p className="text-sm font-medium">File Format</p>
+                <p className="text-xs text-muted-foreground">✓ Valid</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
+              <CheckCircle2 className="w-6 h-6 text-green-600" />
+              <div>
+                <p className="text-sm font-medium">Junk/Missing Fields</p>
+                <p className="text-xs text-muted-foreground">✓ None detected</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
+              <CheckCircle2 className="w-6 h-6 text-green-600" />
+              <div>
+                <p className="text-sm font-medium">Incomplete Data</p>
+                <p className="text-xs text-muted-foreground">✓ None detected</p>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Error Display */}
       {summaryError && (

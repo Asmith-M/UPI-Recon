@@ -41,10 +41,14 @@ export default function Enquiry() {
     return (
       <div className="space-y-3 w-full">
         <div className="p-3 rounded-md bg-muted">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-semibold">RRN</div>
-              <div className="font-mono">{rrn || details.rrn || 'N/A'}</div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1">
+              <div className="text-sm font-semibold">RRN (12-digit Reference)</div>
+              <div className="font-mono text-lg font-bold">{rrn || details.rrn || 'N/A'}</div>
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-semibold">UPI Transaction ID</div>
+              <div className="font-mono text-sm">{details.reference || details.upi_tran_id || details.UPI_Tran_ID || 'N/A'}</div>
             </div>
             <div className="text-right">
               <div className="text-sm font-semibold">Status</div>

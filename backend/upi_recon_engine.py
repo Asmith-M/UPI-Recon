@@ -11,6 +11,7 @@ from config import (
     GL_ACCOUNTS,
     TTUM_TYPES,
     EXCEPTION_MATRIX,
+    OUTPUT_DIR,
 )
 from logging_config import get_logger
 
@@ -34,6 +35,7 @@ class UPIReconciliationEngine:
         switch_df: pd.DataFrame,
         npci_df: pd.DataFrame,
         run_id: str,
+        cycle_id: Optional[str] = None,
     ) -> Dict:
         """
         Perform UPI reconciliation with complex matching logic
@@ -45,6 +47,52 @@ class UPIReconciliationEngine:
         self.cbs_df = cbs_df.copy()
         self.switch_df = switch_df.copy()
         self.npci_df = npci_df.copy()
+        self.run_id = run_id
+        self.current_cycle_id = cycle_id
+
+        # Load previous hanging state and apply carry-over with auto-TTUM triggers
+        import os, json
+        state_path = os.path.join(OUTPUT_DIR, run_id, 'hanging_state.json')
+        prev_state = {}
+        try:
+            if os.path.exists(state_path):
+                with open(state_path, 'r') as sf:
+                    prev_state = json.load(sf) or {}
+        except Exception:
+            prev_state = {}
+        entries = prev_state.get('entries', []) if isinstance(prev_state, dict) else []
+        current_npci_rrns = set(self.npci_df['RRN'].dropna().astype(str)) if 'RRN' in self.npci_df.columns else set()
+        carried = []
+        for entry in entries:
+            rrn = str(entry.get('rrn', '')).strip()
+            dr_cr = str(entry.get('dr_cr', '')).upper()
+            cycles_persisted = int(entry.get('cycles_persisted', 0))
+            # If found in current NPCI, resolve and skip carry
+            if rrn and rrn in current_npci_rrns:
+                continue
+            # Increment age and trigger TTUM after 2 cycles
+            cycles_persisted += 1
+            if cycles_persisted >= 2:
+                # Auto TTUM trigger via marking switch side
+                # Find switch row by RRN
+                if rrn and 'RRN' in self.switch_df.columns:
+                    mask = self.switch_df['RRN'].astype(str) == rrn
+                    if mask.any():
+                        self.switch_df.loc[mask, 'processed'] = True
+                        self.switch_df.loc[mask, 'match_status'] = 'UNMATCHED'
+                        self.switch_df.loc[mask, 'exception_type'] = 'CARRY_OVER_TTUM'
+                        self.switch_df.loc[mask, 'ttum_required'] = True
+                        if dr_cr.startswith('D'):
+                            self.switch_df.loc[mask, 'ttum_type'] = 'REVERSAL'  # Remitter Refund
+                        elif dr_cr.startswith('C'):
+                            self.switch_df.loc[mask, 'ttum_type'] = 'BENEFICIARY_CREDIT'  # Beneficiary Recovery
+                continue
+            # Carry forward for next cycle
+            entry['cycles_persisted'] = cycles_persisted
+            entry['last_cycle_id'] = cycle_id
+            carried.append(entry)
+        # Prepare state holder for later save
+        self._prev_hanging_state = {'entries': carried, 'last_cycle_id': cycle_id}
 
         # Add processing flags
         for df_name in ['cbs_df', 'switch_df', 'npci_df']:
@@ -58,6 +106,19 @@ class UPIReconciliationEngine:
 
         # Execute matching logic in sequence (as per functional document)
         self._step_1_cut_off_transactions()
+        # Mark present-in-Switch but missing-in-NPCI transactions as Hanging for this cycle
+        try:
+            if 'RRN' in self.switch_df.columns:
+                sw_rrns = set(self.switch_df['RRN'].dropna().astype(str))
+                npci_rrns = set(self.npci_df['RRN'].dropna().astype(str)) if 'RRN' in self.npci_df.columns else set()
+                only_switch = sw_rrns - npci_rrns
+                if only_switch:
+                    mask = self.switch_df['RRN'].astype(str).isin(only_switch)
+                    self.switch_df.loc[mask, 'processed'] = True
+                    self.switch_df.loc[mask, 'match_status'] = 'HANGING'
+                    self.switch_df.loc[mask, 'exception_type'] = 'SWITCH_ONLY'
+        except Exception:
+            pass
         self._step_2_self_matched_transactions()
         self._step_3_settlement_entries()
         self._step_4_double_debit_credit()
@@ -68,6 +129,54 @@ class UPIReconciliationEngine:
 
         # Apply exception handling matrix for remaining transactions
         self._apply_exception_handling_matrix()
+
+        # Persist updated hanging state for this cycle before generating results
+        try:
+            import os, json
+            os.makedirs(os.path.join(OUTPUT_DIR, run_id), exist_ok=True)
+            state_entries = self._prev_hanging_state.get('entries', []) if hasattr(self, '_prev_hanging_state') else []
+            # Append current cycle's hanging for carry-over
+            # From NPCI
+            try:
+                if 'match_status' in self.npci_df.columns:
+                    hanging_npci = self.npci_df[self.npci_df['match_status'] == 'HANGING']
+                    for _, row in hanging_npci.iterrows():
+                        rrn = str(row.get('RRN',''))
+                        if rrn:
+                            state_entries.append({
+                                'rrn': rrn,
+                                'amount': row.get('Amount'),
+                                'dr_cr': str(row.get('Dr_Cr','')),
+                                'reason': row.get('exception_type','HANGING'),
+                                'first_seen_cycle': self._prev_hanging_state.get('last_cycle_id') if hasattr(self, '_prev_hanging_state') else cycle_id,
+                                'last_cycle_id': cycle_id,
+                                'cycles_persisted': 0
+                            })
+            except Exception:
+                pass
+            # From Switch-only
+            try:
+                if 'exception_type' in self.switch_df.columns:
+                    sw_hanging = self.switch_df[(self.switch_df['exception_type'] == 'SWITCH_ONLY') & (self.switch_df['match_status'] == 'HANGING')]
+                    for _, row in sw_hanging.iterrows():
+                        rrn = str(row.get('RRN',''))
+                        if rrn:
+                            state_entries.append({
+                                'rrn': rrn,
+                                'amount': row.get('Amount'),
+                                'dr_cr': str(row.get('Dr_Cr','')),
+                                'reason': 'SWITCH_ONLY',
+                                'first_seen_cycle': self._prev_hanging_state.get('last_cycle_id') if hasattr(self, '_prev_hanging_state') else cycle_id,
+                                'last_cycle_id': cycle_id,
+                                'cycles_persisted': 0
+                            })
+            except Exception:
+                pass
+            state_path = os.path.join(OUTPUT_DIR, run_id, 'hanging_state.json')
+            with open(state_path, 'w') as sf:
+                json.dump({'entries': state_entries, 'last_cycle_id': cycle_id, 'updated_at': datetime.now().isoformat()}, sf, indent=2, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to save hanging state: {e}")
 
         # Generate final results
         results = self._generate_reconciliation_results(run_id)
@@ -567,25 +676,29 @@ class UPIReconciliationEngine:
         for df, source in [(self.cbs_df, 'CBS'), (self.switch_df, 'SWITCH'), (self.npci_df, 'NPCI')]:
             exceptions = df[df['exception_type'].notna()]
             for _, row in exceptions.iterrows():
-                # Safe field extraction with fallback logic for alternative column names
-                rrn = self._extract_field(row, ['RRN', 'Reference_Number', 'Reference'])
+                # Extract fields with robust RRN and normalized date/time
+                rrn = self._extract_rrn(row)
                 amount = self._extract_amount(row)
-                date_val = self._extract_field(row, ['Date', 'Tran_Date', 'Transaction_Date', 'Tran_DateTime'])
-                time_val = self._extract_field(row, ['Time', 'Tran_Time', 'Transaction_Time'])
-                reference = self._extract_field(row, ['Reference_ID', 'Reference', 'UPI_Tran_ID', 'Transaction_ID'])
+                raw_date = self._extract_field(row, ['Date', 'Tran_Date', 'Transaction_Date', 'Tran_DateTime'])
+                raw_time = self._extract_field(row, ['Time', 'Tran_Time', 'Transaction_Time'])
+                norm_date, norm_time = self._normalize_date_time(raw_date, raw_time)
+                # Separate UPI transaction id for clarity
+                upi_tran_id = self._extract_field(row, ['UPI_Tran_ID', 'Transaction_ID'])
+                reference = self._extract_field(row, ['Reference_ID', 'Reference'])
                 description = self._extract_field(row, ['Description', 'Narration', 'Remarks', 'Notes'])
                 debit_credit = self._extract_field(row, ['Debit_Credit', 'Dr_Cr', 'D_C', 'Type'])
-                
+
                 # Determine direction based on Dr_Cr
                 direction = self._determine_direction_from_dr_cr(debit_credit)
-                
+
                 exc_record = {
                     'source': source,
                     'rrn': rrn,
                     'amount': amount,
-                    'date': date_val,
-                    'time': time_val,
+                    'date': norm_date,
+                    'time': norm_time,
                     'reference': reference,
+                    'upi_tran_id': upi_tran_id,
                     'description': description,
                     'debit_credit': debit_credit,
                     'direction': direction,
@@ -632,6 +745,71 @@ class UPIReconciliationEngine:
             pass
         return 0.0
 
+    def _extract_rrn(self, row: pd.Series) -> str:
+        """Extract a reliable RRN. Prefer explicit RRN; else find a numeric-like 10-20 digit token; avoid UPI_Tran_ID."""
+        # Prefer dedicated RRN field
+        for col in ['RRN', 'Reference_Number']:
+            if col in row.index:
+                val = row.get(col)
+                if pd.notna(val):
+                    s = str(val).strip()
+                    if s:
+                        return s
+        # Fallback: scan candidate columns for a numeric-looking token
+        import re
+        candidates = []
+        for col in ['Reference', 'Remarks', 'Narration', 'Description']:
+            if col in row.index:
+                val = row.get(col)
+                if pd.notna(val):
+                    candidates.append(str(val))
+        text = ' '.join(candidates)
+        m = re.search(r'(?<!\d)(\d{10,20})(?!\d)', text)
+        if m:
+            return m.group(1)
+        # As last resort, if RRN missing but UPI_Tran_ID exists, do not use it as RRN; return empty
+        return ''
+
+    def _normalize_date_time(self, date_val: str, time_val: str) -> (str, str):
+        """Split combined datetime into date and time if needed. Return (date, time)."""
+        d = (date_val or '').strip()
+        t = (time_val or '').strip()
+        if not d:
+            return '', t
+        # If we already have time, try to reduce date to just date
+        # Handle common formats
+        try:
+            # ISO with time
+            from datetime import datetime as _dt
+            # Try parse with fromisoformat
+            parsed = None
+            try:
+                parsed = _dt.fromisoformat(d.replace('Z','').replace('T',' '))
+            except Exception:
+                pass
+            if parsed:
+                if not t:
+                    t = parsed.strftime('%H:%M:%S')
+                d = parsed.date().isoformat()
+                return d, t
+        except Exception:
+            pass
+        # If string contains space, split
+        if ' ' in d and not t:
+            parts = d.split()
+            if len(parts) >= 2:
+                # date first then time
+                d_only = parts[0]
+                t_only = parts[1][:8]
+                return d_only, t_only
+        # If has 'T'
+        if 'T' in d and not t:
+            parts = d.split('T', 1)
+            d_only = parts[0]
+            t_only = parts[1][:8]
+            return d_only, t_only
+        return d, t
+
     def _get_ttum_candidates(self) -> List[Dict]:
         """Get all transactions requiring TTUM generation"""
         ttum_candidates = []
@@ -671,6 +849,24 @@ class UPIReconciliationEngine:
                 'account_number': account_number,
                 'gl_accounts': gl_accounts
             })
+
+        # From SWITCH if marked (carry-over triggers)
+        if 'ttum_required' in self.switch_df.columns:
+            sw_ttum = self.switch_df[self.switch_df['ttum_required']]
+            for _, row in sw_ttum.iterrows():
+                direction = self._determine_transaction_direction(row, 'SWITCH')
+                account_number = self._get_account_number(row, direction)
+                gl_accounts = self._get_gl_accounts(row.get('ttum_type'), direction)
+                ttum_candidates.append({
+                    'source': 'SWITCH',
+                    'direction': direction,
+                    'rrn': row.get('RRN'),
+                    'amount': row.get('Amount'),
+                    'ttum_type': row.get('ttum_type'),
+                    'exception_type': row.get('exception_type'),
+                    'account_number': account_number,
+                    'gl_accounts': gl_accounts
+                })
 
         return ttum_candidates
 

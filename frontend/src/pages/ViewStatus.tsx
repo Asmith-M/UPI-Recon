@@ -40,37 +40,43 @@ export default function ViewStatus() {
 
       console.log("Metadata response:", metadata);
 
-      if (metadata.status === 'success' && metadata.uploaded_files && metadata.uploaded_files.length > 0) {
-        const transformedData = transformRawDataToUploadStatus(metadata.uploaded_files);
+      // Support both uploaded_files (array) and saved_files (object) formats
+      const filesData = metadata.uploaded_files || metadata.saved_files || [];
+      
+      if (metadata.status === 'success' && filesData && (Array.isArray(filesData) && filesData.length > 0 || typeof filesData === 'object' && Object.keys(filesData).length > 0)) {
+        const transformedData = transformRawDataToUploadStatus(filesData);
         setUploadStatusData(transformedData);
       } else {
         // Show empty state with proper structure
-        setUploadStatusData(transformRawDataToUploadStatus([]));
+        setUploadStatusData(transformRawDataToUploadStatus({}));
       }
     } catch (error: any) {
       console.error("Error fetching upload status:", error);
       // Show empty state
-      setUploadStatusData(transformRawDataToUploadStatus([]));
+      setUploadStatusData(transformRawDataToUploadStatus({}));
     } finally {
       setLoading(false);
     }
   };
 
-  const transformRawDataToUploadStatus = (uploadedFiles: string[]) => {
+  const transformRawDataToUploadStatus = (filesData: any) => {
     // Handle both array format (uploaded_files) and object format (saved_files)
     let fileList: string[] = [];
 
-    if (Array.isArray(uploadedFiles)) {
-      fileList = uploadedFiles;
-    } else if (typeof uploadedFiles === 'object' && uploadedFiles !== null) {
-      // Handle saved_files object format
-      fileList = Object.keys(uploadedFiles);
+    if (Array.isArray(filesData)) {
+      fileList = filesData;
+    } else if (typeof filesData === 'object' && filesData !== null) {
+      // Handle saved_files object format - explicitly look for npci_inward and npci_outward keys
+      fileList = Object.keys(filesData);
     }
 
-    // Check which files were actually uploaded by looking at the file list
+    // Check which files were actually uploaded by looking for exact key matches
     const has = (fileType: string) => {
-      const normalizedType = fileType.toLowerCase().replace('_', '');
-      return fileList.some(file => file.toLowerCase().includes(normalizedType)) ? 1 : 0;
+      const normalizedFileType = fileType.toLowerCase().replace(/_/g, '');
+      return fileList.some(file => {
+        const normalizedFile = file.toLowerCase().replace(/_/g, '');
+        return normalizedFile === normalizedFileType || file.toLowerCase().includes(fileType.toLowerCase());
+      }) ? 1 : 0;
     };
 
     return [

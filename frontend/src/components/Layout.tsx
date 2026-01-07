@@ -131,6 +131,11 @@ export default function Layout({ children }: LayoutProps) {
               const Icon = item.icon;
               const isActive = location.pathname === item.path;
 
+              // Hide certain menu items for Maker-only users
+              if (user?.role === 'Maker' && (item.label === 'Force - Match' || item.label === 'Roll-Back')) {
+                return null;
+              }
+
               const linkContent = (
                 <Link
                   to={item.path}

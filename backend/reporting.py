@@ -26,31 +26,7 @@ def _ensure_run_dirs(run_id: str):
         os.makedirs(os.path.join(base, sub), exist_ok=True)
 
 
-def _format_value(key: str, value):
-    if value is None:
-        return ''
-    # Amount-like fields
-    if key.lower() in ('amount', 'adjsmt'):
-        try:
-            dec = Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            return format(dec, 'f')
-        except Exception:
-            return str(value)
-
-    # Date-like fields: try to normalize to YYYY-MM-DD
-    if 'date' in key.lower() or key.lower() in ('shtdat',):
-        try:
-            if isinstance(value, datetime):
-                return value.strftime('%Y-%m-%d')
-            # Allow strings already in ISO
-            s = str(value).strip()
-            dt = datetime.strptime(s, '%Y-%m-%d')
-            return dt.strftime('%Y-%m-%d')
-        except Exception:
-            # fallback: return original string
-            return str(value)
-
-    return str(value)
+# Removed _format_value to preserve native numeric/date types in outputs
 
 
 def write_report(run_id: str, cycle_id: Optional[str], subdir: str, filename: str, headers: List[str], rows: List[Dict]):
@@ -75,8 +51,7 @@ def write_report(run_id: str, cycle_id: Optional[str], subdir: str, filename: st
         for r in rows:
             row = []
             for h in headers:
-                v = r.get(h)
-                row.append(_format_value(h, v))
+                row.append(r.get(h))
             writer.writerow(row)
 
     return out_path
@@ -125,8 +100,7 @@ def write_ttum_xlsx(run_id: str, cycle_id: Optional[str], filename: str, headers
     for row_num, row_data in enumerate(rows, 2):
         for col_num, header in enumerate(headers, 1):
             value = row_data.get(header)
-            formatted_value = _format_value(header, value)
-            cell = ws.cell(row=row_num, column=col_num, value=formatted_value)
+            cell = ws.cell(row=row_num, column=col_num, value=value)
             cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
     
     # Auto-adjust column widths
@@ -145,8 +119,12 @@ def write_ttum_xlsx(run_id: str, cycle_id: Optional[str], filename: str, headers
     # Freeze header row
     ws.freeze_panes = "A2"
     
-    # Save workbook
+    # Save and close workbook to flush buffers
     wb.save(out_path)
+    try:
+        wb.close()
+    except Exception:
+        pass
     return out_path
 
 
@@ -178,8 +156,7 @@ def write_ttum_csv(run_id: str, cycle_id: Optional[str], filename: str, headers:
         for row_data in rows:
             row = []
             for header in headers:
-                value = row_data.get(header)
-                row.append(_format_value(header, value))
+                row.append(row_data.get(header))
             writer.writerow(row)
     
     return out_path
@@ -208,16 +185,8 @@ def write_ttum_pandas(run_id: str, cycle_id: Optional[str], filename: str, heade
         base = os.path.join(base, f"cycle_{cycle_id}")
     os.makedirs(base, exist_ok=True)
     
-    # Format row values before creating DataFrame
-    formatted_rows = []
-    for row_data in rows:
-        formatted_row = {}
-        for header in headers:
-            value = row_data.get(header)
-            formatted_row[header] = _format_value(header, value)
-        formatted_rows.append(formatted_row)
-    
-    df = pd.DataFrame(formatted_rows, columns=headers)
+    # Pass raw rows directly; let pandas preserve dtypes
+    df = pd.DataFrame(rows, columns=headers)
     
     if format.lower() == 'xlsx':
         out_path = os.path.join(base, f"{filename}.xlsx")

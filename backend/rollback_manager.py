@@ -1167,6 +1167,17 @@ class RollbackManager:
             accounting_file = os.path.join(output_dir, "accounting_output.json")
             if not os.path.exists(accounting_file):
                 return False, "No accounting output found for accounting rollback"
+            # Disallow accounting rollback if TTUM files have been downloaded
+            try:
+                ttum_flag = os.path.join(output_dir, 'ttum', 'download_meta.json')
+                if os.path.exists(ttum_flag):
+                    with open(ttum_flag, 'r') as f:
+                        meta = json.load(f)
+                    if isinstance(meta, dict) and meta.get('is_downloaded'):
+                        return False, "TTUM already downloaded; accounting rollback disabled"
+            except Exception:
+                # If flag cannot be read, err on safer side and allow rollback
+                pass
 
         return True, "Rollback allowed"
 

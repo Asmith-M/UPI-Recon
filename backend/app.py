@@ -466,27 +466,68 @@ async def upload_files(
 
         uploaded_files_content = {}
         invalid_files = []
+        validation_warnings = []
 
         # Per-file size limit: 100 MB
         MAX_BYTES = 100 * 1024 * 1024
 
         for key, upfile in required_files.items():
             if upfile is None:
-                invalid_files.append({"field": key, "error": "missing"})
-                continue
-            content = await upfile.read()
-            if not content or len(content) == 0:
-                invalid_files.append({"filename": upfile.filename, "error": "empty file"})
-                continue
-            if len(content) > MAX_BYTES:
-                invalid_files.append({"filename": upfile.filename, "error": "file exceeds 100 MB limit"})
+                invalid_files.append({
+                    "field": key,
+                    "error": "required file is missing",
+                    "suggestion": f"Please upload a {key.replace('_', ' ')} file"
+                })
                 continue
 
-            # quick format/content validation
+            try:
+                content = await upfile.read()
+            except Exception as e:
+                invalid_files.append({
+                    "filename": upfile.filename,
+                    "error": f"failed to read file content: {str(e)}"
+                })
+                continue
+
+            if not content or len(content) == 0:
+                invalid_files.append({
+                    "filename": upfile.filename,
+                    "error": "file is empty",
+                    "suggestion": "Please ensure the file contains data"
+                })
+                continue
+
+            if len(content) > MAX_BYTES:
+                invalid_files.append({
+                    "filename": upfile.filename,
+                    "error": f"file size ({len(content)/1024/1024:.1f} MB) exceeds limit (100 MB)"
+                })
+                continue
+
+            # Enhanced format/content validation
             is_valid, err = file_handler.validate_file_bytes(content, upfile.filename)
             if not is_valid:
-                invalid_files.append({"filename": upfile.filename, "error": err})
+                invalid_files.append({
+                    "filename": upfile.filename,
+                    "error": err,
+                    "suggestion": "Please check file format and ensure it contains valid financial transaction data"
+                })
                 continue
+
+            # Additional validation for required columns based on file type
+            validation_result = await validate_file_columns(content, upfile.filename, key)
+            if not validation_result["valid"]:
+                invalid_files.append({
+                    "filename": upfile.filename,
+                    "error": validation_result["error"],
+                    "missing_columns": validation_result.get("missing_columns", []),
+                    "suggestion": validation_result.get("suggestion", "Please check column headers in your file")
+                })
+                continue
+
+            # Log warnings but don't block upload
+            if validation_result.get("warnings"):
+                validation_warnings.extend(validation_result["warnings"])
 
             uploaded_files_content[upfile.filename] = content
 
@@ -497,8 +538,16 @@ async def upload_files(
                     rollback_manager.ingestion_rollback(run_id, bad.get('filename', bad.get('field','')), bad.get('error',''))
                 except Exception:
                     pass
+
+            # Log validation warnings
+            if validation_warnings:
+                logger.info(f"Upload validation warnings: {validation_warnings}")
+
             logger.warning(f"Upload contained invalid files: {invalid_files}")
-            raise HTTPException(status_code=400, detail={"invalid_files": invalid_files})
+            error_response = {"invalid_files": invalid_files}
+            if validation_warnings:
+                error_response["warnings"] = validation_warnings
+            raise HTTPException(status_code=400, detail=error_response)
 
         # Save uploaded files into run/cycle subfolder
         run_folder = file_handler.save_uploaded_files(uploaded_files_content, run_id, cycle=cycle, direction=direction, run_date=run_date)
@@ -775,16 +824,27 @@ async def run_reconciliation_cycle(
 
 @app.get("/api/v1/recon/latest/summary")
 async def get_latest_summary(user: dict = Depends(get_current_user)):
-    """Get reconciliation summary for a specific run"""
+    """Get reconciliation summary for the latest run. Supports UPI (OUTPUT_DIR) and legacy (UPLOAD_DIR)."""
     try:
-        # find latest run folder in UPLOAD_DIR
         runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         latest = sorted(runs)[-1]
-        run_root = os.path.join(UPLOAD_DIR, latest)
 
-        # search for nested summary or report files (cycle/direction subfolders)
+        # UPI-first: read OUTPUT_DIR/<run>/recon_output.json and return its summary
+        upi_output = os.path.join(OUTPUT_DIR, latest, 'recon_output.json')
+        if os.path.exists(upi_output):
+            with open(upi_output, 'r') as f:
+                data = json.load(f)
+            return JSONResponse(content={
+                "run_id": latest,
+                "format": "upi",
+                "summary": data.get('summary', {}),
+                "exceptions_count": len(data.get('exceptions', [])),
+            })
+
+        # Legacy fallback as before
+        run_root = os.path.join(UPLOAD_DIR, latest)
         summary_path = None
         report_path = None
         for root_dir, dirs, files in os.walk(run_root):
@@ -803,7 +863,7 @@ async def get_latest_summary(user: dict = Depends(get_current_user)):
                 return PlainTextResponse(content=f.read())
         else:
             raise HTTPException(status_code=404, detail="Summary not found for the latest run")
-        
+
     except Exception as e:
         logger.error(f"Get summary error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve summary")
@@ -867,6 +927,44 @@ async def get_historical_summary():
         logger.error(f"Get historical summary error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve historical summaries")
 
+
+@app.post("/api/v1/reports/listing")
+async def generate_listing_reports(run_id: str = Query(...), user: dict = Depends(get_current_user)):
+    """Generate raw listing reports immediately after upload and before reconciliation.
+    Produces CSV dumps of the uploaded files under OUTPUT_DIR/<run_id>/reports.
+    """
+    try:
+        run_root = os.path.join(UPLOAD_DIR, run_id)
+        if not os.path.isdir(run_root):
+            raise HTTPException(status_code=404, detail=f"Run ID '{run_id}' not found")
+        # locate the folder that actually contains uploaded files
+        target_folder = None
+        for root_dir, dirs, files in os.walk(run_root):
+            if 'file_mapping.json' in files:
+                target_folder = root_dir
+                break
+        if not target_folder:
+            target_folder = run_root
+        # Load through existing loader to normalize content
+        dataframes = file_handler.load_files_for_recon(target_folder)
+        out_dir = os.path.join(OUTPUT_DIR, run_id, 'reports')
+        os.makedirs(out_dir, exist_ok=True)
+        generated = []
+        for idx, df in enumerate(dataframes):
+            try:
+                name = f"listing_{idx+1}.csv"
+                path = os.path.join(out_dir, name)
+                df.to_csv(path, index=False, encoding='utf-8-sig')
+                generated.append(path)
+            except Exception as e:
+                logger.warning(f"Failed to write listing {idx+1}: {e}")
+                continue
+        return JSONResponse(content={"status": "ok", "generated": generated, "count": len(generated)})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Listing report generation failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate listing reports")
 
 @app.get("/api/v1/recon/latest/unmatched")
 async def get_latest_unmatched(user: dict = Depends(get_current_user)):
@@ -985,32 +1083,54 @@ async def get_latest_hanging(user: dict = Depends(get_current_user)):
 
 @app.get("/api/v1/reports/ttum")
 async def download_ttum(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
-    """Package TTUM CSVs for a run into a ZIP and return"""
+    """Package TTUM CSVs/XLSX for a run into a ZIP and return. Supports OUTPUT_DIR-first (UPI) and legacy UPLOAD_DIR.
+    Sets a persistent is_downloaded flag to disable subsequent accounting rollbacks.
+    """
     import zipfile
     try:
-        # JWT temporarily disabled for testing
-        # require_role(user, 'Verif.AI')
-        # default to latest run
         runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         target = run_id if run_id else sorted(runs)[-1]
+
+        # Prefer OUTPUT_DIR/<run>/ttum for UPI runs
+        candidate_dirs = []
+        out_ttum = os.path.join(OUTPUT_DIR, target, 'ttum')
+        up_ttum = None
         run_folder = os.path.join(UPLOAD_DIR, target)
-        # search nested directories for 'ttum' folder
-        ttum_dir = None
         for root_dir, dirs, files in os.walk(run_folder):
             if 'ttum' in dirs:
-                ttum_dir = os.path.join(root_dir, 'ttum')
+                up_ttum = os.path.join(root_dir, 'ttum')
                 break
-        if not ttum_dir or not os.path.exists(ttum_dir):
+        if os.path.exists(out_ttum):
+            candidate_dirs.append(out_ttum)
+        if up_ttum and os.path.exists(up_ttum):
+            candidate_dirs.append(up_ttum)
+
+        if not candidate_dirs:
             raise HTTPException(status_code=404, detail="TTUM folder not found for run")
 
+        # Build ZIP from first existing candidate (OUTPUT_DIR preferred)
+        ttum_dir = candidate_dirs[0]
         zip_path = os.path.join(ttum_dir, f"ttum_{target}.zip")
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for fname in os.listdir(ttum_dir):
                 fp = os.path.join(ttum_dir, fname)
                 if os.path.isfile(fp):
                     zf.write(fp, arcname=fname)
+
+        # Set persistent download flag (for rollback manager)
+        try:
+            meta_path = os.path.join(out_ttum, 'download_meta.json')
+            os.makedirs(out_ttum, exist_ok=True)
+            with open(meta_path, 'w') as mf:
+                json.dump({
+                    'is_downloaded': True,
+                    'downloaded_at': datetime.utcnow().isoformat(),
+                    'downloaded_by': user.get('username', 'unknown')
+                }, mf, indent=2)
+        except Exception:
+            pass
 
         return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
     except HTTPException:
@@ -1022,7 +1142,9 @@ async def download_ttum(user: dict = Depends(get_current_user), run_id: Optional
 
 @app.get("/api/v1/reports/ttum/csv")
 async def download_ttum_csv(user: dict = Depends(get_current_user), run_id: Optional[str] = None, cycle_id: Optional[str] = None):
-    """Download TTUM data in CSV format (all files zipped if multiple cycles)"""
+    """Download TTUM data in CSV format (all files zipped if multiple cycles).
+    Sets a persistent is_downloaded flag.
+    """
     import zipfile
     try:
         # Default to latest run
@@ -1040,6 +1162,14 @@ async def download_ttum_csv(user: dict = Depends(get_current_user), run_id: Opti
         
         # If single file, return it directly
         if len(ttum_files) == 1:
+            # Set download flag
+            try:
+                out_ttum = os.path.join(OUTPUT_DIR, target_run, 'ttum')
+                os.makedirs(out_ttum, exist_ok=True)
+                with open(os.path.join(out_ttum, 'download_meta.json'), 'w') as mf:
+                    json.dump({'is_downloaded': True, 'downloaded_at': datetime.utcnow().isoformat(), 'downloaded_by': user.get('username','unknown')}, mf, indent=2)
+            except Exception:
+                pass
             return FileResponse(ttum_files[0], media_type='text/csv', filename=os.path.basename(ttum_files[0]))
         
         # Multiple files - zip them
@@ -1050,6 +1180,15 @@ async def download_ttum_csv(user: dict = Depends(get_current_user), run_id: Opti
             for file_path in ttum_files:
                 zf.write(file_path, arcname=os.path.basename(file_path))
         
+        # Set download flag
+        try:
+            out_ttum = os.path.join(OUTPUT_DIR, target_run, 'ttum')
+            os.makedirs(out_ttum, exist_ok=True)
+            with open(os.path.join(out_ttum, 'download_meta.json'), 'w') as mf:
+                json.dump({'is_downloaded': True, 'downloaded_at': datetime.utcnow().isoformat(), 'downloaded_by': user.get('username','unknown')}, mf, indent=2)
+        except Exception:
+            pass
+
         return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
     except HTTPException:
         raise
@@ -1060,7 +1199,9 @@ async def download_ttum_csv(user: dict = Depends(get_current_user), run_id: Opti
 
 @app.get("/api/v1/reports/ttum/xlsx")
 async def download_ttum_xlsx(user: dict = Depends(get_current_user), run_id: Optional[str] = None, cycle_id: Optional[str] = None):
-    """Download TTUM data in XLSX format (all files zipped if multiple cycles)"""
+    """Download TTUM data in XLSX format (all files zipped if multiple cycles).
+    Sets a persistent is_downloaded flag.
+    """
     import zipfile
     try:
         # Default to latest run
@@ -1078,6 +1219,14 @@ async def download_ttum_xlsx(user: dict = Depends(get_current_user), run_id: Opt
         
         # If single file, return it directly
         if len(ttum_files) == 1:
+            # Set download flag
+            try:
+                out_ttum = os.path.join(OUTPUT_DIR, target_run, 'ttum')
+                os.makedirs(out_ttum, exist_ok=True)
+                with open(os.path.join(out_ttum, 'download_meta.json'), 'w') as mf:
+                    json.dump({'is_downloaded': True, 'downloaded_at': datetime.utcnow().isoformat(), 'downloaded_by': user.get('username','unknown')}, mf, indent=2)
+            except Exception:
+                pass
             return FileResponse(ttum_files[0], media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=os.path.basename(ttum_files[0]))
         
         # Multiple files - zip them
@@ -1088,6 +1237,15 @@ async def download_ttum_xlsx(user: dict = Depends(get_current_user), run_id: Opt
             for file_path in ttum_files:
                 zf.write(file_path, arcname=os.path.basename(file_path))
         
+        # Set download flag
+        try:
+            out_ttum = os.path.join(OUTPUT_DIR, target_run, 'ttum')
+            os.makedirs(out_ttum, exist_ok=True)
+            with open(os.path.join(out_ttum, 'download_meta.json'), 'w') as mf:
+                json.dump({'is_downloaded': True, 'downloaded_at': datetime.utcnow().isoformat(), 'downloaded_by': user.get('username','unknown')}, mf, indent=2)
+        except Exception:
+            pass
+
         return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
     except HTTPException:
         raise
@@ -1296,12 +1454,37 @@ async def propose_force_match(request: Request, user: dict = Depends(get_current
         if not run_id:
             raise HTTPException(status_code=400, detail='run_id is required')
 
+        # Validate RRN exists in the reconciliation results
+        rrn_found = False
+        run_root = os.path.join(UPLOAD_DIR, run_id)
+        for root_dir, dirs, files in os.walk(run_root):
+            if 'recon_output.json' in files:
+                with open(os.path.join(root_dir, 'recon_output.json'), 'r') as f:
+                    recon_data = json.load(f)
+                    if isinstance(recon_data, dict):
+                        if 'exceptions' in recon_data:
+                            # UPI format - check exceptions array
+                            for exc in recon_data['exceptions']:
+                                if exc.get('rrn') == rrn or exc.get('RRN') == rrn:
+                                    rrn_found = True
+                                    break
+                        else:
+                            # Legacy format - check if RRN key exists
+                            if rrn in recon_data:
+                                rrn_found = True
+                                break
+                if rrn_found:
+                    break
+
+        if not rrn_found:
+            raise HTTPException(status_code=404, detail=f'RRN {rrn} not found in reconciliation results')
+
         proposals = _load_proposals(run_id)
         prop_id = f"PROP_{int(time.time())}_{len(proposals)+1}"
-        maker = 'system'
+        maker = user.get('username', 'unknown')
         proposal = {
             'proposal_id': prop_id,
-            'rrn': rrn,  # Store actual RRN, not txn123
+            'rrn': rrn,
             'action': action,
             'direction': direction,
             'run_id': run_id,
@@ -1360,7 +1543,7 @@ async def approve_force_match(request: Request, user: dict = Depends(get_current
         if not found:
             raise HTTPException(status_code=404, detail='Proposal not found')
 
-        checker = 'system'
+        checker = user.get('username', 'unknown')
         if checker == found.get('maker'):
             raise HTTPException(status_code=400, detail='Maker and checker must be different')
 
@@ -1390,17 +1573,42 @@ async def approve_force_match(request: Request, user: dict = Depends(get_current
             if recon_path and os.path.exists(recon_path):
                 with open(recon_path, 'r') as rf:
                     ro = json.load(rf)
-                if isinstance(ro, dict) and found.get('rrn') in ro:
+
+                # Handle UPI format (exceptions array)
+                if isinstance(ro, dict) and 'exceptions' in ro:
+                    exceptions = ro.get('exceptions', [])
+                    for i, exc in enumerate(exceptions):
+                        if exc.get('rrn') == found.get('rrn') or exc.get('RRN') == found.get('rrn'):
+                            # Mark as force matched by updating status and adding force_match flag
+                            exc['status'] = 'FORCE_MATCHED'
+                            exc['force_matched'] = True
+                            exc['force_match_proposal_id'] = found.get('proposal_id')
+                            exc['force_match_approved_by'] = checker
+                            exc['force_match_approved_at'] = datetime.utcnow().isoformat()
+                            break
+                    ro['exceptions'] = exceptions
+                # Handle legacy format (RRN keyed dict)
+                elif isinstance(ro, dict) and found.get('rrn') in ro:
                     ro[found.get('rrn')]['status'] = 'FORCE_MATCHED'
+                    ro[found.get('rrn')]['force_matched'] = True
+                    ro[found.get('rrn')]['force_match_proposal_id'] = found.get('proposal_id')
+                    ro[found.get('rrn')]['force_match_approved_by'] = checker
+                    ro[found.get('rrn')]['force_match_approved_at'] = datetime.utcnow().isoformat()
                 else:
                     # try list format
                     for rec in ro:
-                        if (rec.get('rrn') == found.get('rrn')) or (rec.get('RRN') == found.get('rrn')):
+                        if isinstance(rec, dict) and (rec.get('rrn') == found.get('rrn') or rec.get('RRN') == found.get('rrn')):
                             rec['status'] = 'FORCE_MATCHED'
+                            rec['force_matched'] = True
+                            rec['force_match_proposal_id'] = found.get('proposal_id')
+                            rec['force_match_approved_by'] = checker
+                            rec['force_match_approved_at'] = datetime.utcnow().isoformat()
+                            break
+
                 with open(recon_path, 'w') as wf:
                     json.dump(ro, wf, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to update recon_output.json: {e}")
 
         # audit
         try:
@@ -1408,7 +1616,6 @@ async def approve_force_match(request: Request, user: dict = Depends(get_current
         except Exception:
             pass
 
-        # pretend TTUM generation succeeded for demo
         return JSONResponse(content={'status': 'approved', 'ttum_generated': True})
 
     except HTTPException:
@@ -1634,25 +1841,31 @@ async def get_unmatched_report(user: dict = Depends(get_current_user)):
 
 @app.get("/api/v1/reports/matched")
 async def download_matched_reports(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
-    """Package pairwise matched CSVs (GL_vs_Switch, Switch_vs_NPCI, GL_vs_NPCI) into a ZIP and return."""
+    """Package pairwise matched CSVs into a ZIP and return. Supports OUTPUT_DIR-first (UPI) and legacy."""
     import zipfile
     try:
         runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         target = run_id if run_id else sorted(runs)[-1]
-        run_folder = os.path.join(UPLOAD_DIR, target)
 
-        # look for reports directory
+        # Prefer OUTPUT_DIR/<run>/reports
+        out_reports = os.path.join(OUTPUT_DIR, target, 'reports')
         reports_dir = None
-        for root_dir, dirs, files in os.walk(run_folder):
-            if 'reports' in dirs:
-                reports_dir = os.path.join(root_dir, 'reports')
-                break
+        if os.path.exists(out_reports):
+            reports_dir = out_reports
+        else:
+            # legacy UPLOAD_DIR fallback
+            run_folder = os.path.join(UPLOAD_DIR, target)
+            for root_dir, dirs, files in os.walk(run_folder):
+                if 'reports' in dirs:
+                    reports_dir = os.path.join(root_dir, 'reports')
+                    break
+
         if not reports_dir or not os.path.exists(reports_dir):
             raise HTTPException(status_code=404, detail="Reports directory not found for run")
 
-        matched_files = [f for f in os.listdir(reports_dir) if any(x in f.lower() for x in ('gl_vs_switch', 'switch_vs_npci', 'gl_vs_npci', 'gl_switch', 'switch_npci', 'gl_npci'))]
+        matched_files = [f for f in os.listdir(reports_dir) if any(x in f.lower() for x in ('gl_vs_switch', 'switch_vs_npci', 'gl_vs_npci', 'gl_switch', 'switch_npci', 'gl_npci', 'matched')) and f.endswith('.csv')]
         if not matched_files:
             raise HTTPException(status_code=404, detail="No matched reports found for run")
 
@@ -1734,14 +1947,27 @@ async def get_available_reports(user: dict = Depends(get_current_user), run_id: 
 
 @app.get("/api/v1/reports/summary")
 async def download_summary(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
-    """Return the summary.json for a run."""
+    """Return summary for a run. For UPI, derives from OUTPUT_DIR/<run>/recon_output.json."""
     try:
         runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         target = run_id if run_id else sorted(runs)[-1]
-        run_root = os.path.join(UPLOAD_DIR, target)
 
+        # UPI-first
+        upi_output = os.path.join(OUTPUT_DIR, target, 'recon_output.json')
+        if os.path.exists(upi_output):
+            with open(upi_output, 'r') as f:
+                data = json.load(f)
+            return JSONResponse(content={
+                "run_id": target,
+                "format": "upi",
+                "summary": data.get('summary', {}),
+                "exceptions_count": len(data.get('exceptions', []))
+            })
+
+        # Legacy
+        run_root = os.path.join(UPLOAD_DIR, target)
         summary_path = None
         for root_dir, dirs, files in os.walk(run_root):
             if 'summary.json' in files:

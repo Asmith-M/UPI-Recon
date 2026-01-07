@@ -64,32 +64,45 @@ export default function Unmatched() {
     if (format === 'upi_array' && Array.isArray(data)) {
       console.log(`Processing ${data.length} exceptions in UPI array format`);
       
-      data.forEach((exc: any) => {
-        if (!exc || typeof exc !== 'object') return;
+      data.forEach((exc: any, index: number) => {
+        if (!exc || typeof exc !== 'object') {
+          console.warn(`Skipping invalid exception at index ${index}:`, exc);
+          return;
+        }
+
+        // Validate required fields - RRN must be present
+        const rrn = exc.rrn || exc.RRN;
+        if (!rrn || rrn === 'unknown' || rrn === '') {
+          console.warn(`Skipping exception with invalid RRN at index ${index}:`, exc);
+          return;
+        }
 
         const transaction = {
           source: exc.source || 'NPCI',
-          rrn: exc.rrn || exc.RRN || 'unknown',
+          rrn: rrn,
+          upiTransactionId: exc.reference || exc.UPI_Tran_ID || exc.upi_tran_id || 'N/A',
           drCr: exc.debit_credit || exc.dr_cr || 'Dr',
-          amount: parseFloat(exc.amount) || 0,
-          amountFormatted: `₹${(parseFloat(exc.amount) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          amount: parseFloat(String(exc.amount || 0)) || 0,
+          amountFormatted: `₹${(parseFloat(String(exc.amount || 0)) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           tranDate: exc.date || exc.tran_date || new Date().toLocaleDateString(),
+          time: exc.time || '',
           rc: exc.rc || '00',
           type: exc.type || exc.tran_type || 'UPI',
-          exceptionType: exc.exception_type,
+          exceptionType: exc.exception_type || 'UNMATCHED',
           ttumRequired: exc.ttum_required || false,
-          direction: exc.direction || 'UNKNOWN'
+          direction: exc.direction || 'UNKNOWN',
+          reference: exc.reference || ''
         };
 
         // Route to appropriate list based on source
         const source = (exc.source || 'NPCI').toUpperCase();
-        if (source === 'NPCI') {
+        if (source === 'NPCI' || source === 'SWITCH') {
           npci.push(transaction);
         } else if (source === 'CBS') {
           cbs.push(transaction);
-        } else if (source === 'SWITCH') {
-          // Switch unmatched - add to NPCI list
-          npci.push({ ...transaction, source: 'SWITCH' });
+        } else {
+          // Unknown source - add to NPCI by default
+          npci.push(transaction);
         }
       });
 
@@ -131,6 +144,7 @@ export default function Unmatched() {
           return {
             source: sourceName,
             rrn: rrn,
+            upiTransactionId: sourceData.reference || sourceData.upi_tran_id || sourceData.UPI_Tran_ID || sourceData.transaction_id || 'N/A',
             drCr: drCr,
             amount: amount,
             amountFormatted: `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
@@ -256,6 +270,7 @@ export default function Unmatched() {
     const csvData = data.map(row => ({
       Source: row.source,
       RRN: row.rrn,
+      "UPI Transaction ID": row.upiTransactionId,
       "Dr/Cr": row.drCr,
       Amount: row.amount,
       "Transaction Date": row.tranDate,
@@ -421,6 +436,7 @@ export default function Unmatched() {
                     <TableRow>
                       <TableHead>Source</TableHead>
                       <TableHead>RRN</TableHead>
+                      <TableHead>UPI Transaction ID</TableHead>
                       <TableHead>Dr/Cr</TableHead>
                       <TableHead>Amount</TableHead>
                       <TableHead>Tran Date</TableHead>
@@ -436,6 +452,7 @@ export default function Unmatched() {
                         <TableRow key={idx}>
                           <TableCell className="font-medium">{row.source}</TableCell>
                           <TableCell>{row.rrn}</TableCell>
+                          <TableCell className="font-mono text-xs">{row.upiTransactionId}</TableCell>
                           <TableCell>
                             <span className={row.drCr === "Dr" ? "text-red-600" : "text-green-600"}>
                               {row.drCr}
@@ -490,6 +507,7 @@ export default function Unmatched() {
                     <TableRow>
                       <TableHead>Source</TableHead>
                       <TableHead>RRN</TableHead>
+                      <TableHead>UPI Transaction ID</TableHead>
                       <TableHead>Dr/Cr</TableHead>
                       <TableHead>Amount</TableHead>
                       <TableHead>Tran Date</TableHead>
@@ -505,6 +523,7 @@ export default function Unmatched() {
                         <TableRow key={idx}>
                           <TableCell className="font-medium">{row.source}</TableCell>
                           <TableCell>{row.rrn}</TableCell>
+                          <TableCell className="font-mono text-xs">{row.upiTransactionId}</TableCell>
                           <TableCell>
                             <span className={row.drCr === "Dr" ? "text-red-600" : "text-green-600"}>
                               {row.drCr}

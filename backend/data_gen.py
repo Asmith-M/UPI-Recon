@@ -1,230 +1,329 @@
 #!/usr/bin/env python3
 """
-Generate mock bank reconciliation files for an Indian bank (example: SBI).
-Produces seven Excel files:
+NPCI / UPI compliant mock data generator for bank reconciliation testing.
+Aligned with Verif.ai UPI Functional Document V2 (06-Jan-2026).
+
+Generates XLSX files in backend/bank_recon_files:
   1_CBS_Inward.xlsx
   2_CBS_Outward.xlsx
   3_Switch.xlsx
   4_NPCI_Inward.xlsx
   5_NPCI_Outward.xlsx
-  6_NSTL.xlsx
-  7_Adjustment_Files.xlsx
+  6_NTSL.xlsx
+  7_Internal_Adjustments.xlsx   (INTERNAL ONLY, not Annexure-IV)
+
+Enhancements:
+- UPI fields included: UPI_Tran_ID, Payer_PSP, Payee_PSP, MCC, Originating_Channel
+- Explicit RC='RB' deemed-success injection
+- Hanging simulation: Switch-only transactions missing in NPCI
+- Relaxed match: UPI_Tran_ID + Amount match but RRN missing
 
 Requirements:
   pip install pandas openpyxl numpy
 """
+
 import os
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# ----------------------------
-# Configuration
-# ----------------------------
-OUTPUT_DIR = "bank_recon_files"   # output folder (created if missing)
-NUM_MASTER_RECORDS = 300         # master transactions to generate
-EXTRA_SWITCH_RECORDS = 12        # extra messages in switch
-SEED = 42                        # reproducible randomness (set to None for true randomness)
+# -------------------------------------------------
+# CONFIGURATION
+# -------------------------------------------------
+OUTPUT_DIR = "bank_recon_files"
+NUM_MASTER_RECORDS = 300
+EXTRA_SWITCH_RECORDS = 12
+SEED = 42
 
-# Set seeds for reproducibility
-if SEED is not None:
-    random.seed(SEED)
-    np.random.seed(SEED)
+CYCLE_DATE = datetime.now().strftime("%Y-%m-%d")
+CYCLE_ID = f"{CYCLE_DATE}_CYCLE_01"
+RUN_ID = f"RUN_{CYCLE_ID}"
+
+random.seed(SEED)
+np.random.seed(SEED)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def generate_unique_rrns(count, forbidden_set=None):
+PAYER_PSP_CHOICES = [
+    'GPay', 'PhonePe', 'Paytm', 'BHIM', 'AmazonPay', 'WhatsAppPay',
+    'SBI', 'HDFC', 'ICICI', 'AXIS', 'YES'
+]
+PAYEE_PSP_CHOICES = [
+    'SBI', 'HDFC', 'ICICI', 'AXIS', 'YES', 'Kotak', 'BOB', 'IDFC'
+]
+MCC_CHOICES = ['5411', '5732', '5812', '5999', '6011']
+ORIG_CHANNEL_CHOICES = ['MOBILE', 'QR', 'COLLECT', 'INTENT', 'WEB']
+
+# Proportions for special scenarios
+RB_RATIO = 0.08  # ~8% deemed success
+HANGING_COUNT_TARGET = 20  # target switch-only transactions (absent in NPCI)
+RELAXED_MATCH_COUNT_TARGET = 15  # records with RRN missing but UPI_Tran_ID + Amount match
+
+# -------------------------------------------------
+# HELPERS
+# -------------------------------------------------
+
+def generate_unique_rrns(count, forbidden=None):
     """
-    Generate `count` unique 12-digit RRNs as strings, ensuring none in `forbidden_set`.
-    Leading digit will not be zero.
+    Generate unique 12- to 15-digit RRNs.
+    `forbidden` can be list, set, pandas Series, or None.
     """
-    forbidden = set(forbidden_set) if forbidden_set else set()
+    if forbidden is None:
+        forbidden_set = set()
+    else:
+        forbidden_set = set(list(forbidden))
+
     rrns = set()
     while len(rrns) < count:
-        r = str(random.randint(100_000_000_000, 999_999_999_999))  # 12-digit numeric
-        if r not in forbidden and r not in rrns:
-            rrns.add(r)
+        rrn = str(random.randint(10_000_000_000, 999_999_999_999_999))
+        if rrn not in forbidden_set and rrn not in rrns:
+            rrns.add(rrn)
     return list(rrns)
 
-def random_date_within_last(days=2):
-    minutes_back = random.randint(1, days * 24 * 60)
-    d = datetime.now() - timedelta(minutes=minutes_back)
-    return d.strftime("%Y-%m-%d %H:%M:%S")
 
-def generate_master(num_records):
-    """
-    Generate a master dataframe of transactions (unique RRNs).
-    """
-    rrns = generate_unique_rrns(num_records)
-    channels = ["UPI", "IMPS", "NEFT", "RTGS", "ATM", "POS"]
-    statuses = ["SUCCESS", "FAILED", "PENDING"]
-    directions = ["CR", "DR"]  # CR = credit (inward to bank), DR = debit (outward from bank)
-    beneficiaries = ["Alice", "Bob", "CorpX", "VendorY", "MerchantZ", "CustomerA"]
-    tran_types = ["U2", "U3"]  # UPI transaction types
+def generate_rc(size):
+    """Return an array of RC codes with RB injection."""
+    base = np.random.choice(['00', '05', '12'], size=size, p=[0.8, 0.15, 0.05])
+    # Inject RB
+    rb_idx = np.random.choice(np.arange(size), size=max(1, int(size * RB_RATIO)), replace=False)
+    for i in rb_idx:
+        base[i] = 'RB'
+    return base
 
+
+def rc_to_status(rc):
+    return 'SUCCESS' if rc in ('00', 'RB') else 'FAILED'
+
+
+# -------------------------------------------------
+# MASTER DATA
+# -------------------------------------------------
+
+def generate_master(n):
+    rrns = generate_unique_rrns(n)
     rows = []
-    for i in range(num_records):
-        txn_id = f"TXN{100000 + i}"
-        rrn = rrns[i]
-        # realistic amounts: mostly retail, some larger
-        if random.random() < 0.75:
-            amount = round(random.uniform(10.0, 2000.0), 2)
-        else:
-            amount = round(random.uniform(2000.0, 50000.0), 2)
 
-        date = random_date_within_last(days=2)
-        status = random.choices(statuses, weights=[0.85, 0.08, 0.07])[0]
-        channel = random.choice(channels)
-        direction = random.choices(directions, weights=[0.6, 0.4])[0]
-        account_no = str(random.randint(1000000000, 9999999999))
-        beneficiary = random.choice(beneficiaries)
-        tran_type = random.choice(tran_types)  # U2 or U3
-        rc = str(random.randint(100, 999))  # Response code
-
+    for i in range(n):
+        rc = '00'  # default; RB/failed added later where needed
+        amount = round(random.uniform(10, 50000), 2)
+        drcr = random.choices(['CR', 'DR'], weights=[0.6, 0.4])[0]
+        payer = random.choice(PAYER_PSP_CHOICES)
+        payee = random.choice(PAYEE_PSP_CHOICES)
+        mcc = random.choice(MCC_CHOICES)
+        channel = random.choice(ORIG_CHANNEL_CHOICES)
         rows.append({
-            "Transaction_ID": txn_id,  # Maps to UPI_Tran_ID via file_handler._smart_map_columns()
-            "RRN": rrn,
-            "Amount": amount,
-            "Tran_Date": date,
-            "Dr_Cr": direction,
-            "RC": rc,
-            "Tran_Type": tran_type,
-            "Status": status,
-            "Channel": channel,
-            "Account_No": account_no,
-            "Beneficiary": beneficiary
+            'Run_ID': RUN_ID,
+            'Cycle_ID': CYCLE_ID,
+            'UPI_Tran_ID': f"UTRN{100000 + i}",
+            'RRN': rrns[i],
+            'Amount': amount,
+            'Tran_Date': CYCLE_DATE,
+            'Transaction_Date': CYCLE_DATE,
+            'Dr_Cr': drcr,
+            'RC': rc,
+            'Tran_Type': 'U3',  # RAW transactions
+            'Status': rc_to_status(rc),
+            'Account_No': str(random.randint(1000000000, 9999999999)),
+            'Beneficiary': random.choice(['Alice', 'Bob', 'MerchantX', 'CorpY', 'VendorZ']),
+            'Payer_PSP': payer,
+            'Payee_PSP': payee,
+            'MCC': mcc,
+            'Originating_Channel': channel,
+            'Source': ''
         })
     return pd.DataFrame(rows)
 
-# ----------------------------
-# Generate datasets
-# ----------------------------
-print("Generating master dataset...")
-df_master = generate_master(NUM_MASTER_RECORDS)
+print('Generating master dataset...')
+master = generate_master(NUM_MASTER_RECORDS)
 
-# Create SWITCH file: master + some extra messages (late/duplicate)
-print("Creating Switch file...")
+# Assign initial RC pattern to master (so Switch and NPCI can derive)
+master['RC'] = generate_rc(len(master))
+master['Status'] = master['RC'].apply(rc_to_status)
+
+# -------------------------------------------------
+# SWITCH FILE
+# -------------------------------------------------
+print('Creating Switch file...')
+# Switch baseline from master
+df_switch = master.copy()
+# Add extra Switch-only RRNs to guarantee hanging
 extra = generate_master(EXTRA_SWITCH_RECORDS)
-# Ensure extra RRNs don't collide with master
-extra_rrns = generate_unique_rrns(EXTRA_SWITCH_RECORDS, forbidden_set=set(df_master["RRN"].tolist()))
-extra["RRN"] = extra_rrns
-df_switch = pd.concat([df_master, extra], ignore_index=True)
+extra['RRN'] = generate_unique_rrns(EXTRA_SWITCH_RECORDS, forbidden=df_switch['RRN'])
+extra['RC'] = np.random.choice(['00', 'RB', '12', '05'], size=EXTRA_SWITCH_RECORDS, p=[0.65, 0.15, 0.1, 0.1])
+extra['Status'] = extra['RC'].apply(rc_to_status)
 
-# Introduce a few random status mismatches in switch (for test)
-for idx in random.sample(range(len(df_switch)), k=min(6, len(df_switch))):
-    df_switch.at[idx, "Status"] = random.choice(["SUCCESS", "FAILED", "PENDING"])
+df_switch = pd.concat([df_switch, extra], ignore_index=True)
+# Source tag
+df_switch['Source'] = 'SWITCH'
 
-df_switch["Source"] = "SWITCH"
-df_switch.to_excel(os.path.join(OUTPUT_DIR, "3_Switch.xlsx"), index=False)
+# -------------------------------------------------
+# CBS FILES
+# -------------------------------------------------
+print('Creating CBS Inward / Outward files...')
+# Sample based on Dr_Cr
+df_cbs_in = (
+    master[master['Dr_Cr'] == 'CR']
+    .sample(frac=0.92, random_state=SEED)
+    .copy()
+)
+df_cbs_out = (
+    master[master['Dr_Cr'] == 'DR']
+    .sample(frac=0.90, random_state=SEED)
+    .copy()
+)
 
-# CBS Inward / Outward: what posted to the core banking system (subsets of master)
-print("Creating CBS Inward and CBS Outward...")
-master_credits = df_master[df_master["Dr_Cr"] == "CR"].copy().reset_index(drop=True)
-master_debits = df_master[df_master["Dr_Cr"] == "DR"].copy().reset_index(drop=True)
+df_cbs_in['Source'] = 'CBS'
+df_cbs_out['Source'] = 'CBS'
 
-# Simulate realistic posting percentages
-df_cbs_inward = master_credits.sample(frac=0.92, random_state=SEED).copy()
-df_cbs_inward["Source"] = "CBS"
+# -------------------------------------------------
+# NPCI FILES
+# -------------------------------------------------
+print('Creating NPCI Inward / Outward files...')
+# Start from Switch population to emulate network flow
+npc_in = (
+    df_switch[df_switch['Dr_Cr'] == 'CR']
+    .sample(frac=0.94, random_state=SEED)
+    .copy()
+)
+npc_out = (
+    df_switch[df_switch['Dr_Cr'] == 'DR']
+    .sample(frac=0.91, random_state=SEED)
+    .copy()
+)
 
-df_cbs_outward = master_debits.sample(frac=0.90, random_state=SEED).copy()
-df_cbs_outward["Source"] = "CBS"
+# Inject RB scenarios explicitly into NPCI to test deemed success
+if len(npc_in) > 0:
+    rb_idx_in = np.random.choice(npc_in.index, size=max(1, int(len(npc_in) * (RB_RATIO / 2))), replace=False)
+    npc_in.loc[rb_idx_in, 'RC'] = 'RB'
+if len(npc_out) > 0:
+    rb_idx_out = np.random.choice(npc_out.index, size=max(1, int(len(npc_out) * (RB_RATIO / 2))), replace=False)
+    npc_out.loc[rb_idx_out, 'RC'] = 'RB'
 
-df_cbs_inward.to_excel(os.path.join(OUTPUT_DIR, "1_CBS_Inward.xlsx"), index=False)
-df_cbs_outward.to_excel(os.path.join(OUTPUT_DIR, "2_CBS_Outward.xlsx"), index=False)
+npc_in['Status'] = npc_in['RC'].apply(rc_to_status)
+npc_out['Status'] = npc_out['RC'].apply(rc_to_status)
 
-# NPCI Inward / Outward: derived from Switch plus small differences
-print("Creating NPCI Inward and NPCI Outward...")
-switch_copy = df_switch.copy().reset_index(drop=True)
+npc_in['Source'] = 'NPCI'
+npc_out['Source'] = 'NPCI'
 
-npc_in = switch_copy[switch_copy["Dr_Cr"] == "CR"].sample(frac=0.93, random_state=SEED).copy().reset_index(drop=True)
-npc_out = switch_copy[switch_copy["Dr_Cr"] == "DR"].sample(frac=0.90, random_state=SEED).copy().reset_index(drop=True)
+# -------------------------------------------------
+# HANGING SIMULATION (Switch-only subset absent in NPCI)
+# -------------------------------------------------
+print('Injecting Hanging transactions...')
+# Ensure at least HANGING_COUNT_TARGET switch RRNs are not present in NPCI
+npc_rrns = set(pd.concat([npc_in['RRN'], npc_out['RRN']]).astype(str))
+switch_rrns = set(df_switch['RRN'].astype(str))
+missing_in_npci = list(switch_rrns - npc_rrns)
+if len(missing_in_npci) < HANGING_COUNT_TARGET:
+    # Remove some RRNs from NPCI to reach target
+    needed = HANGING_COUNT_TARGET - len(missing_in_npci)
+    candidates = list(npc_rrns)
+    if candidates:
+        drop_rrns = set(np.random.choice(candidates, size=min(needed, len(candidates)), replace=False))
+        npc_in = npc_in[~npc_in['RRN'].astype(str).isin(drop_rrns)].copy()
+        npc_out = npc_out[~npc_out['RRN'].astype(str).isin(drop_rrns)].copy()
 
-# Introduce small amount differences (fees/rounding) in some records
-def apply_small_amount_variations(df, pct=0.06, delta=-0.50):
-    count = max(1, int(len(df) * pct))
-    idxs = np.random.choice(df.index, size=count, replace=False)
-    for i in idxs:
-        df.at[i, "Amount"] = round(df.at[i, "Amount"] + delta, 2)
+# -------------------------------------------------
+# RELAXED MATCH INJECTION (missing RRN but UPI_Tran_ID + Amount match)
+# -------------------------------------------------
+print('Injecting Relaxed-Match scenarios (missing RRN)...')
+# Select subset from master to replicate into Switch with RRN cleared
+relaxed_candidates = master.sample(n=min(RELAXED_MATCH_COUNT_TARGET, len(master)), random_state=SEED).copy()
+relaxed_key = relaxed_candidates[['UPI_Tran_ID', 'Amount', 'Dr_Cr']].copy()
 
-apply_small_amount_variations(npc_in, pct=0.06, delta=-0.50)    # small fees on inbound
-apply_small_amount_variations(npc_out, pct=0.05, delta=+1.00)   # small rounding on outbound
+# For each candidate, find matching rows in switch/npci and clear RRN in one source (e.g., SWITCH)
+# to force engine to use relaxed matching
+mask = df_switch.set_index(['UPI_Tran_ID', 'Amount', 'Dr_Cr']).index.isin(relaxed_key.set_index(['UPI_Tran_ID', 'Amount', 'Dr_Cr']).index)
+idxs = df_switch[mask].sample(frac=1.0, random_state=SEED).index[:len(relaxed_candidates)]
+if len(idxs) > 0:
+    df_switch.loc[idxs, 'RRN'] = ''
 
-npc_in["Source"] = "NPCI"
-npc_out["Source"] = "NPCI"
+# -------------------------------------------------
+# NTSL FILE (SETTLEMENT)
+# -------------------------------------------------
+print('Creating NTSL file...')
+settled = pd.concat([npc_in, npc_out], ignore_index=True)
+settled = settled[settled['RC'].isin(['00', 'RB'])].copy()
 
-npc_in.to_excel(os.path.join(OUTPUT_DIR, "4_NPCI_Inward.xlsx"), index=False)
-npc_out.to_excel(os.path.join(OUTPUT_DIR, "5_NPCI_Outward.xlsx"), index=False)
+settled['Settlement_Charge'] = 0.0
+settled['Amount_Settled'] = settled['Amount']
 
-# NSTL settlement file: successful settled transactions with settlement charges for some
-print("Creating NSTL settlement file...")
-npc_combined = pd.concat([npc_in, npc_out], ignore_index=True)
-settled = npc_combined[npc_combined["Status"] == "SUCCESS"].copy().reset_index(drop=True)
+charge_idxs = settled.sample(frac=0.03, random_state=SEED).index
+for i in charge_idxs:
+    charge = round(min(10.0, float(settled.at[i, 'Amount']) * 0.001), 2)
+    settled.at[i, 'Settlement_Charge'] = charge
+    settled.at[i, 'Amount_Settled'] = round(float(settled.at[i, 'Amount']) - charge, 2)
 
-# Apply settlement charges to a small percent
-settled["Settlement_Charge"] = 0.0
-settled["Amount_Settled"] = settled["Amount"]
-if len(settled) > 0:
-    n_charges = max(1, int(len(settled) * 0.03))
-    charge_idxs = np.random.choice(settled.index, size=n_charges, replace=False)
-    for i in charge_idxs:
-        # charge is small, e.g., 0.1% up to a small cap
-        charge_amt = round(min(10.0, settled.at[i, "Amount"] * 0.001), 2)
-        settled.at[i, "Settlement_Charge"] = charge_amt
-        settled.at[i, "Amount_Settled"] = round(settled.at[i, "Amount"] - charge_amt, 2)
+settled['Source'] = 'NTSL'
 
-settled["Source"] = "NSTL"
-settled.to_excel(os.path.join(OUTPUT_DIR, "6_NSTL.xlsx"), index=False)
+# -------------------------------------------------
+# WRITE FILES
+# -------------------------------------------------
+print('Writing output XLSX files...')
+df_switch.to_excel(f"{OUTPUT_DIR}/3_Switch.xlsx", index=False)
 
-# Adjustment file: manual corrections and force matches for exceptions
-print("Creating Adjustment file...")
-rrn_switch = set(df_switch["RRN"].tolist())
-rrn_cbs = set(pd.concat([df_cbs_inward, df_cbs_outward], ignore_index=True)["RRN"].tolist())
-missing_in_cbs = list(rrn_switch - rrn_cbs)
+# CBS Inward/Outward
+# Keep identical schema across all files
+common_cols = [
+    'Run_ID', 'Cycle_ID', 'UPI_Tran_ID', 'RRN', 'Amount', 'Tran_Date', 'Transaction_Date',
+    'Dr_Cr', 'RC', 'Tran_Type', 'Status', 'Account_No', 'Beneficiary',
+    'Payer_PSP', 'Payee_PSP', 'MCC', 'Originating_Channel', 'Source'
+]
 
+df_cbs_in = df_cbs_in[common_cols]
+df_cbs_out = df_cbs_out[common_cols]
+npc_in = npc_in[common_cols]
+npc_out = npc_out[common_cols]
+settled_cols = common_cols + ['Settlement_Charge', 'Amount_Settled']
+# ensure all required cols exist
+for c in ['Settlement_Charge', 'Amount_Settled']:
+    if c not in settled.columns:
+        settled[c] = ''
+settled = settled[settled_cols]
+
+# Write CBS
+df_cbs_in.to_excel(f"{OUTPUT_DIR}/1_CBS_Inward.xlsx", index=False)
+df_cbs_out.to_excel(f"{OUTPUT_DIR}/2_CBS_Outward.xlsx", index=False)
+
+# Write NPCI
+npc_in.to_excel(f"{OUTPUT_DIR}/4_NPCI_Inward.xlsx", index=False)
+npc_out.to_excel(f"{OUTPUT_DIR}/5_NPCI_Outward.xlsx", index=False)
+
+# Write NTSL
+settled.to_excel(f"{OUTPUT_DIR}/6_NTSL.xlsx", index=False)
+
+# -------------------------------------------------
+# INTERNAL ADJUSTMENTS (NOT ANNEXURE-IV)
+# -------------------------------------------------
+print('Creating Internal Adjustments file...')
 adjustments = []
 
-# Create adjustments for some of the missing-in-CBS switch records
-n_missing_to_fix = min(8, len(missing_in_cbs))
-if n_missing_to_fix > 0:
-    sample_missing = random.sample(missing_in_cbs, n_missing_to_fix)
-    for rrn in sample_missing:
-        rec = df_switch[df_switch["RRN"] == rrn].iloc[0].to_dict()
-        adjustments.append({
-            "RRN": rrn,
-            "Amount": rec["Amount"],
-            "Tran_Date": rec["Tran_Date"],
-            "Dr_Cr": rec["Dr_Cr"],
-            "RC": rec["RC"],
-            "Tran_Type": rec["Tran_Type"],
-            "Adjustment_Action": random.choice(["FORCE_MATCH", "MANUAL_POST", "REVERSE"]),
-            "Comments": "Auto-generated adjustment to reconcile missing in CBS",
-            "Performed_By": random.choice(["Ops_User1", "Ops_User2", "ManagerA"])
-        })
-
-# Add some pure manual entries (new RRNs)
-manual_rrns = generate_unique_rrns(5, forbidden_set=rrn_switch.union(rrn_cbs))
-for i, rrn in enumerate(manual_rrns):
+missing_in_cbs = set(df_switch['RRN'].astype(str)) - set(pd.concat([df_cbs_in, df_cbs_out])['RRN'].astype(str))
+for rrn in list(missing_in_cbs)[:8]:
+    rec = df_switch[df_switch['RRN'].astype(str) == str(rrn)].iloc[0]
     adjustments.append({
-        "RRN": rrn,
-        "Amount": round(random.uniform(50.0, 10000.0), 2),
-        "Tran_Date": random_date_within_last(days=2),
-        "Dr_Cr": random.choice(["CR", "DR"]),
-        "RC": str(random.randint(100, 999)),
-        "Tran_Type": random.choice(["U2", "U3"]),
-        "Adjustment_Action": "MANUAL_ENTRY",
-        "Comments": "Manual adjustment posted to correct prior day imbalance",
-        "Performed_By": random.choice(["Ops_User1", "ManagerB"])
+        'Run_ID': RUN_ID,
+        'Cycle_ID': CYCLE_ID,
+        'RRN': rrn,
+        'Amount': rec['Amount'],
+        'Tran_Date': rec['Tran_Date'],
+        'Action': random.choice(['FORCE_MATCH', 'MANUAL_POST']),
+        'Reason': 'Internal correction before TTUM',
+        'Performed_By': 'OPS_USER'
     })
 
-df_adjust = pd.DataFrame(adjustments)
-df_adjust.to_excel(os.path.join(OUTPUT_DIR, "7_Adjustment_Files.xlsx"), index=False)
+pd.DataFrame(adjustments).to_excel(f"{OUTPUT_DIR}/7_Internal_Adjustments.xlsx", index=False)
 
-print("\n✅ Generation complete. Files saved to:", os.path.abspath(OUTPUT_DIR))
-for p in sorted(Path(OUTPUT_DIR).glob("*.xlsx")):
-    print(" -", p.name)
+# -------------------------------------------------
+# FINAL CHECKS
+# -------------------------------------------------
+# Ensure Switch has duplicates with empty RRNs only by design; otherwise RRNs should be unique
+non_empty_rrns = df_switch[df_switch['RRN'].astype(str) != '']['RRN']
+assert non_empty_rrns.is_unique, "Duplicate non-empty RRNs detected in Switch file!"
+
+print("\n✅ NPCI/UPI compliant mock files generated successfully")
+print("📂 Output directory:", os.path.abspath(OUTPUT_DIR))
+for f in sorted(Path(OUTPUT_DIR).glob("*.xlsx")):
+    print(" -", f.name)

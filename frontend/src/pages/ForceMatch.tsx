@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Loader2, CheckCircle2, AlertCircle, Search, RefreshCw, ZoomIn } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Textarea } from "@/components/ui/textarea";
 import { apiClient } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
@@ -60,6 +61,9 @@ interface ForceMatchState {
   zeroDifferenceValid: boolean;
   panelLHSColumn: ComparableColumn;
   panelRHSColumn: ComparableColumn;
+  matchingMode: "best_match" | "relaxed_match";
+  showRCRB: boolean;
+  matchComments: string;
 }
 
 type ForceMatchAction =
@@ -76,7 +80,10 @@ type ForceMatchAction =
   | { type: 'SET_PANEL_RHS_COLUMN'; payload: ComparableColumn }
   | { type: 'SET_ZERO_DIFFERENCE_VALID'; payload: boolean }
   | { type: 'MATCH_START' }
-  | { type: 'MATCH_FINISH' };
+  | { type: 'MATCH_FINISH' }
+  | { type: 'SET_MATCHING_MODE'; payload: "best_match" | "relaxed_match" }
+  | { type: 'TOGGLE_RC_RB'; payload: boolean }
+  | { type: 'SET_MATCH_COMMENTS'; payload: string };
 
 const initialState: ForceMatchState = {
   transactions: [],
@@ -91,6 +98,9 @@ const initialState: ForceMatchState = {
   zeroDifferenceValid: false,
   panelLHSColumn: "amount",
   panelRHSColumn: "amount",
+  matchingMode: "best_match",
+  showRCRB: false,
+  matchComments: "",
 };
 
 const forceMatchReducer = (state: ForceMatchState, action: ForceMatchAction): ForceMatchState => {
@@ -106,9 +116,9 @@ const forceMatchReducer = (state: ForceMatchState, action: ForceMatchAction): Fo
     case 'SET_STATUS_FILTER':
       return { ...state, statusFilter: action.payload };
     case 'OPEN_DUAL_PANEL':
-      return { ...state, showDualPanelDialog: true, selectedTransaction: action.payload };
+      return { ...state, showDualPanelDialog: true, selectedTransaction: action.payload, matchComments: "" };
     case 'CLOSE_DUAL_PANEL':
-      return { ...state, showDualPanelDialog: false, selectedTransaction: null, isMatching: false };
+      return { ...state, showDualPanelDialog: false, selectedTransaction: null, isMatching: false, matchComments: "" };
     case 'SET_PANEL_LHS':
       return { ...state, panelLHS: action.payload };
     case 'SET_PANEL_RHS':
@@ -123,6 +133,12 @@ const forceMatchReducer = (state: ForceMatchState, action: ForceMatchAction): Fo
       return { ...state, isMatching: true };
     case 'MATCH_FINISH':
       return { ...state, isMatching: false };
+    case 'SET_MATCHING_MODE':
+      return { ...state, matchingMode: action.payload };
+    case 'TOGGLE_RC_RB':
+      return { ...state, showRCRB: action.payload };
+    case 'SET_MATCH_COMMENTS':
+      return { ...state, matchComments: action.payload };
     default:
       return state;
   }
@@ -212,6 +228,9 @@ export default function ForceMatch() {
     zeroDifferenceValid,
     panelLHSColumn,
     panelRHSColumn,
+    matchingMode,
+    showRCRB,
+    matchComments,
   } = state;
 
   useEffect(() => {
@@ -377,6 +396,76 @@ export default function ForceMatch() {
           Select two systems (LHS vs RHS) to compare amounts, dates, and references side-by-side. Zero-difference validation ensures perfect alignment before matching.
         </AlertDescription>
       </Alert>
+
+      <Card className="shadow-lg">
+        <CardHeader>
+          <CardTitle>Matching Configuration</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="text-sm font-semibold block mb-2">Matching Mode</label>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input 
+                    type="radio" 
+                    checked={state.matchingMode === 'best_match'}
+                    onChange={() => dispatch({ type: 'SET_MATCHING_MODE', payload: 'best_match' })}
+                  />
+                  <span className="text-sm"><strong>Best Match</strong></span>
+                </label>
+                <p className="text-xs text-muted-foreground ml-6">UPI ID, RRN, Date, Amount</p>
+                <label className="flex items-center gap-2 cursor-pointer mt-2">
+                  <input 
+                    type="radio" 
+                    checked={state.matchingMode === 'relaxed_match'}
+                    onChange={() => dispatch({ type: 'SET_MATCHING_MODE', payload: 'relaxed_match' })}
+                  />
+                  <span className="text-sm"><strong>Relaxed Match</strong></span>
+                </label>
+                <p className="text-xs text-muted-foreground ml-6">UPI ID, Date, Amount</p>
+              </div>
+            </div>
+            <div>
+              <label className="text-sm font-semibold block mb-2">Current Mode</label>
+              <Badge className={state.matchingMode === 'best_match' ? 'bg-green-500' : 'bg-yellow-500'}>
+                {state.matchingMode === 'best_match' ? 'Best Match' : 'Relaxed Match'}
+              </Badge>
+            </div>
+            <div>
+              <Button 
+                variant="outline"
+                className="w-full rounded-full"
+                onClick={() => dispatch({ type: 'TOGGLE_RC_RB', payload: !state.showRCRB })}
+              >
+                {state.showRCRB ? 'Hide' : 'Show'} RC RB View
+              </Button>
+              <p className="text-xs text-muted-foreground mt-2">View Response Code RB transactions (Deemed Success)</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* RC RB (Deemed Success) View */}
+      {state.showRCRB && (
+        <Card className="shadow-lg border-amber-200">
+          <CardHeader>
+            <CardTitle className="text-amber-900">RC RB - Deemed Success Transactions</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Alert className="border-amber-200 bg-amber-50 mb-4">
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+              <AlertTitle className="text-amber-900">Response Code RB Transactions</AlertTitle>
+              <AlertDescription className="text-amber-800">
+                These transactions have Response Code RB and may be deemed successful. Identify TCC 102/103 based on CBS credit entry status.
+              </AlertDescription>
+            </Alert>
+            <Button className="w-full rounded-full bg-amber-600 hover:bg-amber-700">
+              Identify TCC 102/103
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="shadow-lg">
         <CardContent className="pt-6">
@@ -605,13 +694,43 @@ export default function ForceMatch() {
                   </>
                 )}
               </Alert>
+
+              <div>
+                <label className="text-sm font-medium block mb-2">Reason/Comments <span className="text-red-500">*</span></label>
+                <Textarea 
+                  placeholder="Enter reason for this match (required)"
+                  value={matchComments}
+                  onChange={(e) => dispatch({ type: 'SET_MATCH_COMMENTS', payload: e.target.value })}
+                  className="min-h-[100px]"
+                />
+                {!matchComments.trim() && (
+                  <p className="text-xs text-red-500 mt-1">Reason/Comments is required before confirming the match</p>
+                )}
+              </div>
             </div>
-            <div className="p-6 border-t flex justify-end gap-2">
-              <Button variant="outline" onClick={() => dispatch({ type: 'CLOSE_DUAL_PANEL' })}>Cancel</Button>
-              <Button onClick={confirmForceMatch} disabled={isMatching || !zeroDifferenceValid || panelLHS === panelRHS}>
-                {isMatching ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                Confirm Match
-              </Button>
+            <div className="p-6 border-t flex justify-between items-center">
+              <div>
+                {selectedTransaction[panelLHS]?.amount !== selectedTransaction[panelRHS]?.amount && (
+                  <Alert className="border-red-200 bg-red-50 w-full">
+                    <AlertCircle className="h-4 w-4 text-red-600" />
+                    <AlertTitle className="text-red-800">Amount Mismatch</AlertTitle>
+                    <AlertDescription className="text-red-700">
+                      Cannot match: {panelLHS.toUpperCase()} amount (₹{selectedTransaction[panelLHS]?.amount?.toLocaleString()}) ≠ {panelRHS.toUpperCase()} amount (₹{selectedTransaction[panelRHS]?.amount?.toLocaleString()})
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => dispatch({ type: 'CLOSE_DUAL_PANEL' })}>Cancel</Button>
+                <Button 
+                  onClick={confirmForceMatch} 
+                  disabled={isMatching || !zeroDifferenceValid || panelLHS === panelRHS || selectedTransaction[panelLHS]?.amount !== selectedTransaction[panelRHS]?.amount || !matchComments.trim()}
+                  title={!matchComments.trim() ? 'Please provide a reason/comment for this match' : selectedTransaction[panelLHS]?.amount !== selectedTransaction[panelRHS]?.amount ? 'Amounts must be equal to match' : ''}
+                >
+                  {isMatching ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                  Confirm Match
+                </Button>
+              </div>
             </div>
           </div>
         </div>
