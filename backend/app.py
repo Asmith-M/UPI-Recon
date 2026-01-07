@@ -2063,7 +2063,7 @@ async def download_unmatched_csv(user: dict = Depends(get_current_user), run_id:
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         target = run_id if run_id else sorted(runs)[-1]
-        
+
         # Try OUTPUT_DIR first (UPI format)
         output_dir = os.path.join(OUTPUT_DIR, target, 'reports')
         if os.path.exists(output_dir):
@@ -2072,10 +2072,10 @@ async def download_unmatched_csv(user: dict = Depends(get_current_user), run_id:
                 if 'unmatched' in f.lower() and f.endswith('.csv'):
                     csv_file = os.path.join(output_dir, f)
                     break
-            
+
             if csv_file and os.path.exists(csv_file):
                 return FileResponse(csv_file, media_type='text/csv', filename='unmatched_exceptions.csv')
-        
+
         # Try UPLOAD_DIR
         run_folder = os.path.join(UPLOAD_DIR, target)
         reports_dir = None
@@ -2083,18 +2083,260 @@ async def download_unmatched_csv(user: dict = Depends(get_current_user), run_id:
             if 'reports' in dirs:
                 reports_dir = os.path.join(root_dir, 'reports')
                 break
-        
+
         if reports_dir:
             for f in os.listdir(reports_dir):
                 if 'unmatched' in f.lower() and f.endswith('.csv'):
                     return FileResponse(os.path.join(reports_dir, f), media_type='text/csv', filename='unmatched_exceptions.csv')
-        
+
         raise HTTPException(status_code=404, detail="Unmatched CSV report not found")
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Download unmatched CSV error: {e}")
         raise HTTPException(status_code=500, detail="Failed to download unmatched CSV")
+
+
+@app.get("/api/v1/reports/ageing")
+async def download_ageing_reports(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download ageing reports (Unmatched_Inward_Ageing.csv and Unmatched_Outward_Ageing.csv)"""
+    import zipfile
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+
+        # Try OUTPUT_DIR first (UPI format)
+        output_dir = os.path.join(OUTPUT_DIR, target, 'reports')
+        ageing_files = []
+        if os.path.exists(output_dir):
+            for f in os.listdir(output_dir):
+                if 'ageing' in f.lower() and f.endswith('.csv'):
+                    ageing_files.append(os.path.join(output_dir, f))
+
+        # Try UPLOAD_DIR if not found
+        if not ageing_files:
+            run_folder = os.path.join(UPLOAD_DIR, target)
+            reports_dir = None
+            for root_dir, dirs, files in os.walk(run_folder):
+                if 'reports' in dirs:
+                    reports_dir = os.path.join(root_dir, 'reports')
+                    break
+
+            if reports_dir and os.path.exists(reports_dir):
+                for f in os.listdir(reports_dir):
+                    if 'ageing' in f.lower() and f.endswith('.csv'):
+                        ageing_files.append(os.path.join(reports_dir, f))
+
+        if not ageing_files:
+            raise HTTPException(status_code=404, detail="No ageing reports found")
+
+        # If single file, return it directly
+        if len(ageing_files) == 1:
+            return FileResponse(ageing_files[0], media_type='text/csv', filename=os.path.basename(ageing_files[0]))
+
+        # Multiple files - zip them
+        zip_path = os.path.join(OUTPUT_DIR, target, f"ageing_reports_{target}.zip")
+        os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in ageing_files:
+                zf.write(file_path, arcname=os.path.basename(file_path))
+
+        return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download ageing reports error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download ageing reports")
+
+
+@app.get("/api/v1/reports/hanging")
+async def download_hanging_reports(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download hanging transaction reports (Hanging_Inward.csv and Hanging_Outward.csv)"""
+    import zipfile
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+
+        # Try OUTPUT_DIR first (UPI format)
+        output_dir = os.path.join(OUTPUT_DIR, target, 'reports')
+        hanging_files = []
+        if os.path.exists(output_dir):
+            for f in os.listdir(output_dir):
+                if 'hanging' in f.lower() and f.endswith('.csv'):
+                    hanging_files.append(os.path.join(output_dir, f))
+
+        # Try UPLOAD_DIR if not found
+        if not hanging_files:
+            run_folder = os.path.join(UPLOAD_DIR, target)
+            reports_dir = None
+            for root_dir, dirs, files in os.walk(run_folder):
+                if 'reports' in dirs:
+                    reports_dir = os.path.join(root_dir, 'reports')
+                    break
+
+            if reports_dir and os.path.exists(reports_dir):
+                for f in os.listdir(reports_dir):
+                    if 'hanging' in f.lower() and f.endswith('.csv'):
+                        hanging_files.append(os.path.join(reports_dir, f))
+
+        if not hanging_files:
+            raise HTTPException(status_code=404, detail="No hanging reports found")
+
+        # If single file, return it directly
+        if len(hanging_files) == 1:
+            return FileResponse(hanging_files[0], media_type='text/csv', filename=os.path.basename(hanging_files[0]))
+
+        # Multiple files - zip them
+        zip_path = os.path.join(OUTPUT_DIR, target, f"hanging_reports_{target}.zip")
+        os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in hanging_files:
+                zf.write(file_path, arcname=os.path.basename(file_path))
+
+        return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download hanging reports error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download hanging reports")
+
+
+@app.get("/api/v1/reports/switch-update")
+async def download_switch_update_file(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download Switch Update File"""
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+
+        # Try OUTPUT_DIR first (UPI format)
+        output_dir = os.path.join(OUTPUT_DIR, target, 'reports')
+        if os.path.exists(output_dir):
+            for f in os.listdir(output_dir):
+                if 'switch_update' in f.lower() and f.endswith('.csv'):
+                    file_path = os.path.join(output_dir, f)
+                    return FileResponse(file_path, media_type='text/csv', filename=f)
+
+        # Try UPLOAD_DIR
+        run_folder = os.path.join(UPLOAD_DIR, target)
+        reports_dir = None
+        for root_dir, dirs, files in os.walk(run_folder):
+            if 'reports' in dirs:
+                reports_dir = os.path.join(root_dir, 'reports')
+                break
+
+        if reports_dir and os.path.exists(reports_dir):
+            for f in os.listdir(reports_dir):
+                if 'switch_update' in f.lower() and f.endswith('.csv'):
+                    file_path = os.path.join(reports_dir, f)
+                    return FileResponse(file_path, media_type='text/csv', filename=f)
+
+        raise HTTPException(status_code=404, detail="Switch Update File not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download switch update file error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download Switch Update File")
+
+
+@app.get("/api/v1/reports/annexure")
+async def download_annexure_reports(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download Annexure IV reports"""
+    import zipfile
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+
+        annexure_files = []
+
+        # Try OUTPUT_DIR first (UPI format)
+        output_dir = os.path.join(OUTPUT_DIR, target)
+        if os.path.exists(output_dir):
+            for root_dir, dirs, files in os.walk(output_dir):
+                for f in files:
+                    if 'annexure' in f.lower() and f.endswith('.csv'):
+                        annexure_files.append(os.path.join(root_dir, f))
+
+        # Try UPLOAD_DIR if not found
+        if not annexure_files:
+            run_folder = os.path.join(UPLOAD_DIR, target)
+            for root_dir, dirs, files in os.walk(run_folder):
+                for f in files:
+                    if 'annexure' in f.lower() and f.endswith('.csv'):
+                        annexure_files.append(os.path.join(root_dir, f))
+
+        if not annexure_files:
+            raise HTTPException(status_code=404, detail="No Annexure reports found")
+
+        # If single file, return it directly
+        if len(annexure_files) == 1:
+            return FileResponse(annexure_files[0], media_type='text/csv', filename=os.path.basename(annexure_files[0]))
+
+        # Multiple files - zip them
+        zip_path = os.path.join(OUTPUT_DIR, target, f"annexure_reports_{target}.zip")
+        os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in annexure_files:
+                zf.write(file_path, arcname=os.path.basename(file_path))
+
+        return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download annexure reports error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download Annexure reports")
+
+
+@app.get("/api/v1/reports/all")
+async def download_all_reports(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download all generated reports in a single ZIP file"""
+    import zipfile
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+
+        zip_path = os.path.join(OUTPUT_DIR, target, f"all_reports_{target}.zip")
+        os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Add reports from OUTPUT_DIR
+            output_dir = os.path.join(OUTPUT_DIR, target)
+            if os.path.exists(output_dir):
+                for root_dir, dirs, files in os.walk(output_dir):
+                    for f in files:
+                        if f.endswith(('.csv', '.json', '.txt')) and not f.startswith('all_reports_'):
+                            rel_path = os.path.relpath(os.path.join(root_dir, f), output_dir)
+                            zf.write(os.path.join(root_dir, f), arcname=rel_path)
+
+            # Add reports from UPLOAD_DIR if not already included
+            run_folder = os.path.join(UPLOAD_DIR, target)
+            if os.path.exists(run_folder):
+                for root_dir, dirs, files in os.walk(run_folder):
+                    for f in files:
+                        if f.endswith(('.csv', '.json', '.txt')):
+                            rel_path = os.path.relpath(os.path.join(root_dir, f), run_folder)
+                            # Avoid duplicates
+                            if rel_path not in zf.namelist():
+                                zf.write(os.path.join(root_dir, f), arcname=f"upload_dir/{rel_path}")
+
+        return FileResponse(zip_path, media_type='application/zip', filename=os.path.basename(zip_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download all reports error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download all reports")
 
 @app.get("/api/v1/recon/latest/raw")
 async def get_latest_raw_data(user: dict = Depends(get_current_user)):

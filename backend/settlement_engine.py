@@ -842,15 +842,36 @@ class SettlementEngine:
                     # Also provide XLSX
                     write_ttum_xlsx(run_id, cycle_id, f"{cat.lower()}", headers, rows_for_cat)
                 except Exception:
-                    path = os.path.join(ttum_dir, f"{cat.lower()}.csv")
+                    # Fallback: create cycle subdirectory if cycle_id provided
+                    if cycle_id:
+                        cycle_dir = os.path.join(ttum_dir, f"cycle_{cycle_id}")
+                        os.makedirs(cycle_dir, exist_ok=True)
+                        path = os.path.join(cycle_dir, f"{cat.lower()}.csv")
+                        xlsx_path = os.path.join(cycle_dir, f"{cat.lower()}.xlsx")
+                    else:
+                        path = os.path.join(ttum_dir, f"{cat.lower()}.csv")
+                        xlsx_path = os.path.join(ttum_dir, f"{cat.lower()}.xlsx")
                     with open(path, 'w', newline='', encoding='utf-8') as f:
                         writer = csv.writer(f)
                         writer.writerow(headers)
                         for r in rows_for_cat:
                             writer.writerow([r.get(h, '') for h in headers])
                     created[cat] = path
+                    # Also write XLSX in fallback
+                    try:
+                        import pandas as pd
+                        df = pd.DataFrame(rows_for_cat)
+                        df.to_excel(xlsx_path, index=False, engine='openpyxl')
+                    except Exception:
+                        pass
             else:
-                path = os.path.join(ttum_dir, f"{cat.lower()}.csv")
+                # Fallback: create cycle subdirectory if cycle_id provided
+                if cycle_id:
+                    cycle_dir = os.path.join(ttum_dir, f"cycle_{cycle_id}")
+                    os.makedirs(cycle_dir, exist_ok=True)
+                    path = os.path.join(cycle_dir, f"{cat.lower()}.csv")
+                else:
+                    path = os.path.join(ttum_dir, f"{cat.lower()}.csv")
                 with open(path, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
                     writer.writerow(headers)

@@ -731,7 +731,7 @@ class ReconciliationEngine:
         """
         try:
             # Generate unmatched ageing reports
-              self._generate_unmatched_ageing_reports(results, run_folder, run_id, cycle_id)
+            self._generate_unmatched_ageing_reports(results, run_folder, run_id, cycle_id)
             logger.info("Generated unmatched ageing reports")
         except Exception as e:
             logger.warning(f"Failed to generate unmatched ageing reports: {e}")
@@ -912,7 +912,7 @@ class ReconciliationEngine:
 
                 row = {
                     'run_id': run_id,
-                    'cycle_id': '',
+                    'cycle_id': cycle_id or '',
                     'RRN': key,
                     'Present_In': '/'.join(present),
                     'Missing_In': '/'.join(missing),
@@ -931,13 +931,16 @@ class ReconciliationEngine:
         # Write CSVs
         ageing_headers = ['run_id','cycle_id','RRN','Present_In','Missing_In','Amount','Transaction_Date','Ageing_Days','Ageing_Bucket','Unmatched_Reason']
         try:
-            write_report(run_id, cycle_id, 'reports', 'Unmatched_Inward_Ageing.csv', ageing_headers, rows_inward)
+            inward_path = write_report(run_id, cycle_id, 'reports', 'Unmatched_Inward_Ageing.csv', ageing_headers, rows_inward)
         except Exception:
-            write_report(run_id, cycle_id, 'reports', 'Unmatched_Inward_Ageing.csv', ageing_headers, [])
+            inward_path = write_report(run_id, cycle_id, 'reports', 'Unmatched_Inward_Ageing.csv', ageing_headers, [])
         try:
-            write_report(run_id, cycle_id, 'reports', 'Unmatched_Outward_Ageing.csv', ageing_headers, rows_outward)
+            outward_path = write_report(run_id, cycle_id, 'reports', 'Unmatched_Outward_Ageing.csv', ageing_headers, rows_outward)
         except Exception:
-            write_report(run_id, cycle_id, 'reports', 'Unmatched_Outward_Ageing.csv', ageing_headers, [])
+            outward_path = write_report(run_id, cycle_id, 'reports', 'Unmatched_Outward_Ageing.csv', ageing_headers, [])
+
+        # Return the inward ageing report path (primary report)
+        return inward_path
 
     def generate_hanging_reports(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
         """Generate Hanging Transactions reports (Inward / Outward)."""
@@ -984,7 +987,7 @@ class ReconciliationEngine:
 
                 row = {
                     'run_id': run_id,
-                    'cycle_id': '',
+                    'cycle_id': cycle_id or '',
                     'RRN': key,
                     'Amount': amt,
                     'Transaction_Date': self._parse_date(date).strftime('%Y-%m-%d') if self._parse_date(date) else (str(date) if date else ''),
@@ -1000,13 +1003,16 @@ class ReconciliationEngine:
         # Write CSVs
         hanging_headers = ['run_id','cycle_id','RRN','Amount','Transaction_Date','Expected_Next_Cycle','Reason']
         try:
-            write_report(run_id, cycle_id, 'reports', 'Hanging_Inward.csv', hanging_headers, rows_in)
+            inward_path = write_report(run_id, cycle_id, 'reports', 'Hanging_Inward.csv', hanging_headers, rows_in)
         except Exception:
-            write_report(run_id, cycle_id, 'reports', 'Hanging_Inward.csv', hanging_headers, [])
+            inward_path = write_report(run_id, cycle_id, 'reports', 'Hanging_Inward.csv', hanging_headers, [])
         try:
-            write_report(run_id, cycle_id, 'reports', 'Hanging_Outward.csv', hanging_headers, rows_out)
+            outward_path = write_report(run_id, cycle_id, 'reports', 'Hanging_Outward.csv', hanging_headers, rows_out)
         except Exception:
-            write_report(run_id, cycle_id, 'reports', 'Hanging_Outward.csv', hanging_headers, [])
+            outward_path = write_report(run_id, cycle_id, 'reports', 'Hanging_Outward.csv', hanging_headers, [])
+
+        # Return the inward hanging report path (primary report)
+        return inward_path
 
     def _generate_unmatched_ageing_reports(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None):
         """Generate unmatched inward/outward CSVs with ageing buckets."""
@@ -1465,7 +1471,7 @@ DETAILED ANALYSIS:
 
 
     
-    def generate_adjustments_csv(self, results: Dict, run_folder: str) -> str:
+    def generate_adjustments_csv(self, results: Dict, run_folder: str, run_id: str = None, cycle_id: str = None) -> str:
         """Generate adjustments.csv for Force Match UI - handles both legacy and UPI format"""
         adjustments_data = []
         
@@ -1549,18 +1555,18 @@ DETAILED ANALYSIS:
     
     def _get_suggested_action(self, record: Dict) -> str:
         """Determine suggested action based on status"""
-        status = record['status']
+        status = record.get('status')
         if status == ORPHAN:
             missing_systems = []
-            if not record[CBS]: missing_systems.append(CBS.upper())
-            if not record[SWITCH]: missing_systems.append(SWITCH.upper())
-            if not record[NPCI]: missing_systems.append(NPCI.upper())
+            if not record.get(CBS): missing_systems.append(CBS.upper())
+            if not record.get(SWITCH): missing_systems.append(SWITCH.upper())
+            if not record.get(NPCI): missing_systems.append(NPCI.upper())
             return f'Investigate missing in {", ".join(missing_systems)}'
         elif status == PARTIAL_MATCH:
             missing_systems = []
-            if not record[CBS]: missing_systems.append(CBS.upper())
-            if not record[SWITCH]: missing_systems.append(SWITCH.upper())
-            if not record[NPCI]: missing_systems.append(NPCI.upper())
+            if not record.get(CBS): missing_systems.append(CBS.upper())
+            if not record.get(SWITCH): missing_systems.append(SWITCH.upper())
+            if not record.get(NPCI): missing_systems.append(NPCI.upper())
             return f'Check missing system data in {", ".join(missing_systems)}'
         elif status == MISMATCH:
             return 'CRITICAL: All systems have record but amounts/dates differ - investigate discrepancy'
