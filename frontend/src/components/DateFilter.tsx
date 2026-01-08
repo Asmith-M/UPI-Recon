@@ -51,21 +51,21 @@ export default function DateFilter({
   };
 
   const setThisWeek = () => {
-    const now = new Date();
-    const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
-    const endOfWeek = new Date(now.setDate(now.getDate() - now.getDay() + 6));
+    const today = new Date();
+    const weekAgo = new Date();
+    weekAgo.setDate(today.getDate() - 7);
 
     const formatDate = (date: Date) => date.toISOString().split('T')[0];
-    handleDateChange(formatDate(startOfWeek), formatDate(endOfWeek));
+    handleDateChange(formatDate(weekAgo), formatDate(today));
   };
 
   const setThisMonth = () => {
-    const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const today = new Date();
+    const monthAgo = new Date();
+    monthAgo.setMonth(today.getMonth() - 1);
 
     const formatDate = (date: Date) => date.toISOString().split('T')[0];
-    handleDateChange(formatDate(firstDay), formatDate(lastDay));
+    handleDateChange(formatDate(monthAgo), formatDate(today));
   };
 
   return (

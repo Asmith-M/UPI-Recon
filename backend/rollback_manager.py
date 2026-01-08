@@ -305,7 +305,20 @@ class RollbackManager:
 
             # Check if run folder exists
             if not os.path.exists(run_folder):
-                raise ValueError(f"Run folder does not exist: {run_folder}")
+                logger.info(f"Run folder does not exist for {run_id} - no rollback needed")
+                self._update_rollback_status(rollback_id, RollbackStatus.COMPLETED)
+                return {
+                    "status": "success",
+                    "rollback_id": rollback_id,
+                    "message": (
+                        f"Ingestion rollback completed - no files to rollback "
+                        f"for {failed_filename} (run folder not yet created)"
+                    ),
+                    "removed_file": None,
+                    "original_request": failed_filename,
+                    "run_id": run_id,
+                    "note": "Run folder did not exist - validation failed before file upload"
+                }
 
             # Try to find the file - check both original and standardized names
             failed_file_path = None

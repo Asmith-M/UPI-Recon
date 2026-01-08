@@ -55,7 +55,7 @@ const Login = () => {
             <img 
               src={verifAiLogo} 
               alt="verif.ai" 
-              className="h-16 object-contain"
+              className="h-40 object-contain"
             />
           </div>
 
@@ -122,7 +122,7 @@ const Login = () => {
               <img 
                 src={nstechxLogo} 
                 alt="NStechX" 
-                className="h-16 object-contain"
+                className="h-32 object-contain"
               />
             </div>
           </div>

@@ -44,8 +44,8 @@ def write_report(run_id: str, cycle_id: Optional[str], subdir: str, filename: st
 
     out_path = os.path.join(base, filename)
 
-    # Write CSV with exact header order and UTF-8 BOM for Excel compatibility
-    with open(out_path, 'w', newline='', encoding='utf-8-sig') as f:
+    # Write CSV with exact header order and UTF-8 encoding
+    with open(out_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         for r in rows:
@@ -53,6 +53,9 @@ def write_report(run_id: str, cycle_id: Optional[str], subdir: str, filename: st
             for h in headers:
                 row.append(r.get(h))
             writer.writerow(row)
+        # Explicitly flush to ensure all data is written
+        f.flush()
+        os.fsync(f.fileno())
 
     return out_path
 
@@ -148,9 +151,9 @@ def write_ttum_csv(run_id: str, cycle_id: Optional[str], filename: str, headers:
     os.makedirs(base, exist_ok=True)
     
     out_path = os.path.join(base, f"{filename}.csv")
-    
-    # Write CSV with exact header order and UTF-8 BOM for Excel compatibility
-    with open(out_path, 'w', newline='', encoding='utf-8-sig') as f:
+
+    # Write CSV with exact header order and UTF-8 encoding
+    with open(out_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         for row_data in rows:
@@ -158,6 +161,9 @@ def write_ttum_csv(run_id: str, cycle_id: Optional[str], filename: str, headers:
             for header in headers:
                 row.append(row_data.get(header))
             writer.writerow(row)
+        # Explicitly flush to ensure all data is written
+        f.flush()
+        os.fsync(f.fileno())
     
     return out_path
 

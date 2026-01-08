@@ -18,6 +18,7 @@ export default function Unmatched() {
   const { dateFrom, dateTo, setDateFrom, setDateTo } = useDate();
   const [unmatchedNPCI, setUnmatchedNPCI] = useState<any[]>([]);
   const [unmatchedCBS, setUnmatchedCBS] = useState<any[]>([]);
+  const [unmatchedSWITCH, setUnmatchedSWITCH] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -34,14 +35,17 @@ export default function Unmatched() {
     try {
       setLoading(true);
       const response = await apiClient.getReport("unmatched");
-      const report = response.data || {};
-      
+      console.log("Unmatched API response:", response);
+      const report = response || {};
+
       // Transform the data based on format
+      console.log("Calling transform with", report.data, report.format);
       const transformed = transformReportToUnmatched(report.data || [], report.format || 'legacy');
       setUnmatchedNPCI(transformed.npci);
       setUnmatchedCBS(transformed.cbs);
-      
-      console.log(`Loaded unmatched data - Format: ${report.format}, NPCI: ${transformed.npci.length}, CBS: ${transformed.cbs.length}`);
+      setUnmatchedSWITCH(transformed.switch);
+
+      console.log(`Loaded unmatched data - Format: ${report.format}, NPCI: ${transformed.npci.length}, CBS: ${transformed.cbs.length}, SWITCH: ${transformed.switch.length}`);
     } catch (error: any) {
       console.error("Error fetching unmatched data:", error.message);
       setUnmatchedNPCI([]);
@@ -52,12 +56,14 @@ export default function Unmatched() {
   };
 
   const transformReportToUnmatched = (data: any, format: string = 'legacy') => {
+    console.log("Transforming data:", data, "format:", format);
     const npci: any[] = [];
     const cbs: any[] = [];
+    const switch_: any[] = [];
 
     if (!data || (Array.isArray(data) && data.length === 0)) {
       console.warn("No data provided for unmatched transformation");
-      return { npci, cbs };
+      return { npci, cbs, switch: switch_ };
     }
 
     // Handle UPI array format (new format from backend)
@@ -96,18 +102,20 @@ export default function Unmatched() {
 
         // Route to appropriate list based on source
         const source = (exc.source || 'NPCI').toUpperCase();
-        if (source === 'NPCI' || source === 'SWITCH') {
+        if (source === 'NPCI') {
           npci.push(transaction);
         } else if (source === 'CBS') {
           cbs.push(transaction);
+        } else if (source === 'SWITCH') {
+          switch_.push(transaction);
         } else {
           // Unknown source - add to NPCI by default
           npci.push(transaction);
         }
       });
 
-      console.log(`Transformed UPI array format - NPCI: ${npci.length}, CBS: ${cbs.length}`);
-      return { npci, cbs };
+      console.log(`Transformed UPI array format - NPCI: ${npci.length}, CBS: ${cbs.length}, SWITCH: ${switch_.length}`);
+      return { npci, cbs, switch: switch_ };
     }
     // Handle legacy object format
     else if (typeof data === 'object' && !Array.isArray(data)) {
@@ -185,12 +193,13 @@ export default function Unmatched() {
         }
       });
 
-      console.log(`Transformed legacy format - NPCI: ${npci.length}, CBS: ${cbs.length}`);
-      return { npci, cbs };
+      console.log(`Transformed legacy format - NPCI: ${npci.length}, CBS: ${cbs.length}, SWITCH: ${switch_.length}`);
+      console.log("Transformed:", { npci, cbs, switch: switch_ });
+      return { npci, cbs, switch: switch_ };
     }
     else {
       console.warn("Invalid data format for unmatched transformation:", data);
-      return { npci, cbs };
+      return { npci, cbs, switch: switch_ };
     }
   };
 
@@ -388,20 +397,26 @@ export default function Unmatched() {
         </CardContent>
       </Card>
 
-      {/* Tabs for NPCI and CBS */}
+      {/* Tabs for NPCI, CBS, and SWITCH */}
       <Tabs defaultValue="npci" className="w-full">
         <TabsList className="bg-muted/30">
-          <TabsTrigger 
+          <TabsTrigger
             value="npci"
             className="data-[state=active]:bg-brand-blue data-[state=active]:text-primary-foreground"
           >
             NPCI Unmatched ({unmatchedNPCI.length})
           </TabsTrigger>
-          <TabsTrigger 
+          <TabsTrigger
             value="cbs"
             className="data-[state=active]:bg-brand-blue data-[state=active]:text-primary-foreground"
           >
             CBS Unmatched ({unmatchedCBS.length})
+          </TabsTrigger>
+          <TabsTrigger
+            value="switch"
+            className="data-[state=active]:bg-brand-blue data-[state=active]:text-primary-foreground"
+          >
+            SWITCH Unmatched ({unmatchedSWITCH.length})
           </TabsTrigger>
         </TabsList>
 
@@ -518,6 +533,77 @@ export default function Unmatched() {
                   </TableHeader>
                   <TableBody>
                     {unmatchedCBS
+                      .filter(matchesFilters)
+                      .map((row, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell className="font-medium">{row.source}</TableCell>
+                          <TableCell>{row.rrn}</TableCell>
+                          <TableCell className="font-mono text-xs">{row.upiTransactionId}</TableCell>
+                          <TableCell>
+                            <span className={row.drCr === "Dr" ? "text-red-600" : "text-green-600"}>
+                              {row.drCr}
+                            </span>
+                          </TableCell>
+                          <TableCell className="font-semibold">{row.amountFormatted}</TableCell>
+                          <TableCell>{row.tranDate}</TableCell>
+                          <TableCell>{row.rc}</TableCell>
+                          <TableCell>{row.type}</TableCell>
+                          <TableCell>
+                            <Button variant="outline" size="sm" className="rounded-full">
+                              Match
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* SWITCH Unmatched */}
+        <TabsContent value="switch">
+          <Card className="shadow-lg">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle>SWITCH Unmatched Transactions</CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => handleExportCSV(unmatchedSWITCH.filter(matchesFilters), 'switch_unmatched.csv')}
+                  disabled={unmatchedSWITCH.filter(matchesFilters).length === 0}
+                >
+                  <Download className="w-4 h-4" />
+                  Export CSV
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="w-8 h-8 animate-spin text-brand-blue" />
+                </div>
+              ) : unmatchedSWITCH.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">No unmatched SWITCH transactions found</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Source</TableHead>
+                      <TableHead>RRN</TableHead>
+                      <TableHead>UPI Transaction ID</TableHead>
+                      <TableHead>Dr/Cr</TableHead>
+                      <TableHead>Amount</TableHead>
+                      <TableHead>Tran Date</TableHead>
+                      <TableHead>RC</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead>Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {unmatchedSWITCH
                       .filter(matchesFilters)
                       .map((row, idx) => (
                         <TableRow key={idx}>

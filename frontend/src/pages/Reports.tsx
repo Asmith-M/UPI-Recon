@@ -275,9 +275,9 @@ const downloadFile = (response: AxiosResponse<Blob>, defaultFilename: string) =>
   let filename = defaultFilename;
 
   if (contentDisposition) {
-      const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
+      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
       if (filenameMatch && filenameMatch.length > 1) {
-          filename = filenameMatch[1];
+          filename = filenameMatch[1].replace(/['"]/g, '');
       }
   }
 
@@ -329,13 +329,36 @@ export default function Reports() {
           defaultFilename = 'ttum_report.zip';
         } else if (report.id === "ttum_csv") {
           response = await apiClient.downloadTTUMCSV();
-          defaultFilename = 'ttum_data.csv';
+          defaultFilename = 'ttum_candidates.csv';
         } else if (report.id === "ttum_xlsx") {
           response = await apiClient.downloadTTUMXLSX();
-          defaultFilename = 'ttum_data.xlsx';
+          defaultFilename = 'ttum_candidates.xlsx';
         } else {
           response = await apiClient.downloadReport(report.endpoint);
-          const extension = report.endpoint.split('/').pop();
+          // Determine appropriate file extension based on report type
+          let extension = 'csv'; // Default to CSV
+          if (report.category?.includes('recon')) {
+            extension = 'csv';
+          } else if (report.endpoint.includes('annexure')) {
+            extension = 'csv';
+          } else if (report.endpoint.includes('ageing')) {
+            extension = 'csv';
+          } else if (report.endpoint.includes('hanging')) {
+            extension = 'csv';
+          } else if (report.endpoint.includes('ttum') && !report.endpoint.includes('xlsx')) {
+            extension = 'csv';
+          } else if (report.endpoint.includes('xlsx')) {
+            extension = 'xlsx';
+          } else {
+            // Fallback to parsing endpoint
+            const endpointParts = report.endpoint.split('/');
+            const lastPart = endpointParts[endpointParts.length - 1];
+            if (['raw', 'inward', 'outward', 'matched', 'unmatched'].includes(lastPart)) {
+              extension = 'csv';
+            } else {
+              extension = lastPart;
+            }
+          }
           defaultFilename = `${report.id}.${extension}`;
         }
         

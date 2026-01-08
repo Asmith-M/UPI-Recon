@@ -198,7 +198,7 @@ export default function Layout({ children }: LayoutProps) {
           <img
             src={verifAiLogo}
             alt="verif.ai"
-            className="h-16 object-contain"
+            className="h-40 object-contain"
           />
         </div>
         <div className="flex-1 overflow-auto">

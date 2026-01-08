@@ -245,10 +245,13 @@ export default function ForceMatch() {
     try {
       dispatch({ type: 'FETCH_START' });
       const rawData = await apiClient.getRawData();
+      console.log("Raw data:", rawData);
       const transformed = transformRawDataToTransactions(rawData);
-      const unmatchedTransactions = transformed.filter(t => 
+      console.log("Transformed transactions:", transformed);
+      const unmatchedTransactions = transformed.filter(t =>
         TRANSACTION_STATUSES.includes(t.status as TransactionStatus)
       );
+      console.log("Filtered unmatched:", unmatchedTransactions);
       dispatch({ type: 'FETCH_SUCCESS', payload: unmatchedTransactions });
     } catch (error: any) {
       console.error("Error fetching transactions:", error);

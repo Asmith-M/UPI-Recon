@@ -99,7 +99,7 @@ def test_all_reports():
 
     # Create test data
     test_data = create_comprehensive_test_data()
-    print(f"✓ Created test data with {len(test_data)} transactions")
+    print(f"[OK] Created test data with {len(test_data)} transactions")
 
     # Initialize engines
     engine = ReconciliationEngine(OUTPUT_DIR)
@@ -110,9 +110,9 @@ def test_all_reports():
     run_folder = os.path.join(OUTPUT_DIR, run_id)
     os.makedirs(run_folder, exist_ok=True)
 
-    print(f"✓ Test run: {run_id}")
-    print(f"✓ Cycle ID: {cycle_id}")
-    print(f"✓ Run folder: {run_folder}")
+    print(f"[OK] Test run: {run_id}")
+    print(f"[OK] Cycle ID: {cycle_id}")
+    print(f"[OK] Run folder: {run_folder}")
 
     reports_generated = []
     errors = []
@@ -377,8 +377,7 @@ def test_all_reports():
         print("✓ All reports generated successfully!")
 
     # List all generated files
-    print("
-Generated files:")
+    print("\nGenerated files:")
     for root, dirs, files in os.walk(run_folder):
         for file in files:
             if file.endswith(('.csv', '.json', '.txt')):

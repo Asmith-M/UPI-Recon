@@ -1,5 +1,8 @@
+print("DEBUG: App.py loaded successfully")
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request, Depends
 from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
+from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from audit_trail import create_audit_trail
@@ -13,6 +16,8 @@ import logging
 import warnings
 import hashlib
 import pandas as pd
+import zipfile
+import io
 from file_handler import FileHandler
 from recon_engine import ReconciliationEngine
 from upi_recon_engine import UPIReconciliationEngine
@@ -138,6 +143,220 @@ async def rate_limiter(request: Request):
 # REQUEST/RESPONSE MODELS
 # ============================================================================
 
+class ReconRunRequest(BaseModel):
+    run_id: Optional[str] = None
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+async def validate_file_columns(content: bytes, filename: str, file_type: str) -> dict:
+    """Validate that required columns exist in uploaded files with flexible column name matching"""
+    try:
+        # Read file content into DataFrame - handle both CSV and Excel files
+        import os
+        _, ext = os.path.splitext(filename)
+        if ext.lower() in ('.xlsx', '.xls'):
+            df = pd.read_excel(io.BytesIO(content), engine='openpyxl')
+        else:
+            df = pd.read_csv(io.BytesIO(content))
+
+        # Log actual columns present in the file for debugging
+        logger.info(f"File: {filename}, Type: {file_type}, Columns found: {list(df.columns)}")
+
+        # Define required columns with possible name variations for flexible matching
+        required_columns_flexible = {
+            'cbs_inward': {
+                'RRN': ['RRN', 'rrn', 'reference number', 'ref number', 'reference', 'ref'],
+                'Amount': ['Amount', 'amount', 'amt', 'tran amount', 'transaction amount', 'tran_amt', 'transaction_amt', 'value'],
+                'Date': ['Date', 'date', 'tran date', 'transaction date', 'tran_date', 'transaction_date', 'dt'],
+                'Debit_Credit': ['Debit_Credit', 'debit_credit', 'd/c', 'dr/cr', 'dr_cr', 'type', 'transaction_type']
+            },
+            'cbs_outward': {
+                'RRN': ['RRN', 'rrn', 'reference number', 'ref number', 'reference', 'ref'],
+                'Amount': ['Amount', 'amount', 'amt', 'tran amount', 'transaction amount', 'tran_amt', 'transaction_amt', 'value'],
+                'Date': ['Date', 'date', 'tran date', 'transaction date', 'tran_date', 'transaction_date', 'dt'],
+                'Debit_Credit': ['Debit_Credit', 'debit_credit', 'd/c', 'dr/cr', 'dr_cr', 'type', 'transaction_type']
+            },
+            'switch': {
+                'RRN': ['RRN', 'rrn', 'reference number', 'ref number', 'reference', 'ref'],
+                'Amount': ['Amount', 'amount', 'amt', 'tran amount', 'transaction amount', 'tran_amt', 'transaction_amt', 'value'],
+                'Date': ['Date', 'date', 'tran date', 'transaction date', 'tran_date', 'transaction_date', 'dt']
+            },
+            'npci_inward': {
+                'RRN': ['RRN', 'rrn', 'reference number', 'ref number', 'reference', 'ref'],
+                'Amount': ['Amount', 'amount', 'amt', 'tran amount', 'transaction amount', 'tran_amt', 'transaction_amt', 'value'],
+                'Date': ['Date', 'date', 'tran date', 'transaction date', 'tran_date', 'transaction_date', 'dt']
+            },
+            'npci_outward': {
+                'RRN': ['RRN', 'rrn', 'reference number', 'ref number', 'reference', 'ref'],
+                'Amount': ['Amount', 'amount', 'amt', 'tran amount', 'transaction amount', 'tran_amt', 'transaction_amt', 'value'],
+                'Date': ['Date', 'date', 'tran date', 'transaction date', 'tran_date', 'transaction_date', 'dt']
+            },
+            'ntsl': {
+                'RRN': ['RRN', 'rrn', 'reference number', 'ref number', 'reference', 'ref'],
+                'Amount': ['Amount', 'amount', 'amt', 'tran amount', 'transaction amount', 'tran_amt', 'transaction_amt', 'value']
+            },
+            'adjustment': {
+                'RRN': ['RRN', 'rrn', 'reference number', 'ref number', 'reference', 'ref'],
+                'Amount': ['Amount', 'amount', 'amt', 'tran amount', 'transaction amount', 'tran_amt', 'transaction_amt', 'value'],
+                'Reason': ['Reason', 'reason', 'description', 'desc', 'remarks', 'adjustment_type', 'type']
+            }
+        }
+
+        # Get required columns for this file type
+        req_cols_dict = required_columns_flexible.get(file_type, {})
+
+        # Define which columns are critical (must be present) vs optional (warnings only)
+        critical_columns = ['RRN', 'Amount']  # Always required
+        optional_columns = ['Date', 'Debit_Credit', 'Reason']  # Warnings only if missing
+
+        # Check for missing columns using flexible matching
+        missing_critical = []
+        missing_optional = []
+        for req_col, possible_names in req_cols_dict.items():
+            found = any(name in df.columns for name in possible_names)
+            if not found:
+                if req_col in critical_columns:
+                    missing_critical.append(req_col)
+                elif req_col in optional_columns:
+                    missing_optional.append(req_col)
+
+        # If critical columns are missing, fail validation
+        if missing_critical:
+            suggestions = []
+            for missing in missing_critical:
+                possible = req_cols_dict[missing]
+                suggestions.append(f"{missing} (possible names: {', '.join(possible)})")
+            return {
+                "valid": False,
+                "error": f"Missing required columns: {', '.join(missing_critical)}",
+                "missing_columns": missing_critical,
+                "suggestion": f"Please ensure the file contains columns for: {'; '.join(suggestions)}"
+            }
+
+        # For optional columns, add warnings but allow upload
+        warnings = []
+        if missing_optional:
+            for missing in missing_optional:
+                possible = req_cols_dict[missing]
+                warnings.append(f"Missing optional column: {missing} (possible names: {', '.join(possible)})")
+
+        # Check for empty DataFrame
+        if len(df) == 0:
+            return {
+                "valid": False,
+                "error": "File contains no data rows",
+                "suggestion": "Please ensure the file contains transaction data"
+            }
+
+        # Warnings (don't block upload)
+        if df.isnull().values.any():
+            warnings.append(f"File contains {df.isnull().sum().sum()} null values")
+
+        return {
+            "valid": True,
+            "warnings": warnings
+        }
+
+        # Check for empty DataFrame
+        if len(df) == 0:
+            return {
+                "valid": False,
+                "error": "File contains no data rows",
+                "suggestion": "Please ensure the file contains transaction data"
+            }
+
+        # Warnings (don't block upload)
+        warnings = []
+        if df.isnull().values.any():
+            warnings.append(f"File contains {df.isnull().sum().sum()} null values")
+
+        return {
+            "valid": True,
+            "warnings": warnings
+        }
+
+    except pd.errors.EmptyDataError:
+        return {
+            "valid": False,
+            "error": "File is empty or contains no valid data"
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "error": f"Error reading file: {str(e)}"
+        }
+
+def get_ttum_files(run_id: str, cycle_id: Optional[str] = None, format: str = 'all') -> List[str]:
+    """Get TTUM files for a run"""
+    ttum_files = []
+
+    # Check OUTPUT_DIR
+    output_ttum = os.path.join(OUTPUT_DIR, run_id, 'ttum')
+    if cycle_id:
+        output_ttum = os.path.join(OUTPUT_DIR, run_id, f'cycle_{cycle_id}', 'ttum')
+
+    if os.path.exists(output_ttum):
+        for f in os.listdir(output_ttum):
+            if format == 'all':
+                if f.endswith(('.csv', '.xlsx', '.json')):
+                    ttum_files.append(os.path.join(output_ttum, f))
+            elif format == 'csv' and f.endswith('.csv'):
+                ttum_files.append(os.path.join(output_ttum, f))
+            elif format == 'xlsx' and f.endswith('.xlsx'):
+                ttum_files.append(os.path.join(output_ttum, f))
+
+    # Check UPLOAD_DIR as fallback
+    if not ttum_files:
+        upload_ttum = os.path.join(UPLOAD_DIR, run_id, 'ttum')
+        if cycle_id:
+            upload_ttum = os.path.join(UPLOAD_DIR, run_id, f'cycle_{cycle_id}', 'ttum')
+
+        if os.path.exists(upload_ttum):
+            for f in os.listdir(upload_ttum):
+                if format == 'all':
+                    if f.endswith(('.csv', '.xlsx', '.json')):
+                        ttum_files.append(os.path.join(upload_ttum, f))
+                elif format == 'csv' and f.endswith('.csv'):
+                    ttum_files.append(os.path.join(upload_ttum, f))
+                elif format == 'xlsx' and f.endswith('.xlsx'):
+                    ttum_files.append(os.path.join(upload_ttum, f))
+
+    return ttum_files
+
+def write_ttum_csv(run_id: str, cycle_id: Optional[str], filename: str, headers: List[str], data: List[dict]) -> str:
+    """Write TTUM data to CSV"""
+    output_dir = os.path.join(OUTPUT_DIR, run_id, 'ttum')
+    if cycle_id:
+        output_dir = os.path.join(OUTPUT_DIR, run_id, f'cycle_{cycle_id}', 'ttum')
+
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"{filename}.csv")
+
+    df = pd.DataFrame(data, columns=headers)
+    df.to_csv(output_path, index=False, encoding='utf-8-sig')
+
+    return output_path
+
+def write_ttum_xlsx(run_id: str, cycle_id: Optional[str], filename: str, headers: List[str], data: List[dict]) -> str:
+    """Write TTUM data to XLSX"""
+    output_dir = os.path.join(OUTPUT_DIR, run_id, 'ttum')
+    if cycle_id:
+        output_dir = os.path.join(OUTPUT_DIR, run_id, f'cycle_{cycle_id}', 'ttum')
+
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"{filename}.xlsx")
+
+    df = pd.DataFrame(data, columns=headers)
+    df.to_excel(output_path, index=False, engine='openpyxl')
+
+    return output_path
+
+# ============================================================================
+# REQUEST/RESPONSE MODELS
+# ============================================================================
+
 
 class ReconRunRequest(BaseModel):
     run_id: Optional[str] = None  # Optional; if not provided, uses latest run
@@ -251,6 +470,61 @@ async def get_current_user_info(user: dict = Depends(get_current_user)):
         "roles": user.get("roles", [])
     }
 
+
+# ============================================================================
+# AUTHENTICATION ENDPOINTS
+# ============================================================================
+
+@app.post("/api/v1/auth/login")
+async def login(request: Request):
+    """Login endpoint - returns JWT token"""
+    try:
+        data = await request.json()
+        username = data.get("username")
+        password = data.get("password")
+
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="Username and password required")
+
+        user = authenticate_user(username, password)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user["username"]}, expires_delta=access_token_expires
+        )
+
+        logger.info(f"User {username} logged in successfully")
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "username": user["username"],
+                "full_name": user["full_name"],
+                "email": user["email"]
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Login failed")
+
+
+@app.get("/api/v1/auth/me")
+async def get_current_user_info(user: dict = Depends(get_current_user)):
+    """Get current user information"""
+    return {
+        "username": user["username"],
+        "full_name": user["full_name"],
+        "email": user["email"],
+        "roles": user.get("roles", [])
+    }
+
+# ============================================================================
+# SUMMARY ENDPOINTS
+# ============================================================================
 
 @app.get("/api/v1/summary")
 async def get_summary(user: dict = Depends(get_current_user)):
@@ -395,32 +669,16 @@ async def upload_files(
     files: List[UploadFile] = File(None),
     user: dict = Depends(get_current_user)
 ):
-    """Uploads the seven required files for a reconciliation run and returns a run_id."""
+    """Uploads the required files for a reconciliation run"""
     try:
         run_id = f"RUN_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        # Validate cycle format (1C..10C)
+        # Validate cycle format
         valid_cycles = [f"{i}C" for i in range(1, 11)]
         if cycle not in valid_cycles:
             raise HTTPException(status_code=400, detail=f"Invalid cycle. Valid cycles: {', '.join(valid_cycles)}")
 
-        # Enforce max one upload per cycle per run_date
-        if run_date:
-            existing = 0
-            for d in os.listdir(UPLOAD_DIR):
-                meta_path = os.path.join(UPLOAD_DIR, d, 'metadata.json')
-                if os.path.exists(meta_path):
-                    try:
-                        with open(meta_path, 'r') as mf:
-                            md = json.load(mf)
-                        if md.get('run_date') == run_date and md.get('cycle') == cycle:
-                            existing += 1
-                    except Exception:
-                        continue
-            if existing >= 1:
-                logger.warning(f"Cycle {cycle} already uploaded for date {run_date} - allowing additional upload (tests/duplicates)")
-
-        # Required file mapping (prefer named fields); support legacy `files` list upload
+        # Required file mapping
         required_files = {
             'cbs_inward': cbs_inward,
             'cbs_outward': cbs_outward,
@@ -431,7 +689,7 @@ async def upload_files(
             'adjustment': adjustment,
         }
 
-        # If caller supplied a generic `files` list (legacy client/tests), map filenames to required keys
+        # Map generic files list
         if files:
             for upfile in files:
                 fname = upfile.filename.lower()
@@ -457,7 +715,7 @@ async def upload_files(
                 elif 'adjust' in fname or 'adj' in fname:
                     required_files['adjustment'] = upfile
                     assigned = True
-                # fallback: try to place any unassigned file into the first empty slot
+
                 if not assigned:
                     for k, v in required_files.items():
                         if v is None:
@@ -467,8 +725,6 @@ async def upload_files(
         uploaded_files_content = {}
         invalid_files = []
         validation_warnings = []
-
-        # Per-file size limit: 100 MB
         MAX_BYTES = 100 * 1024 * 1024
 
         for key, upfile in required_files.items():
@@ -504,7 +760,7 @@ async def upload_files(
                 })
                 continue
 
-            # Enhanced format/content validation
+            # Validate file
             is_valid, err = file_handler.validate_file_bytes(content, upfile.filename)
             if not is_valid:
                 invalid_files.append({
@@ -514,7 +770,7 @@ async def upload_files(
                 })
                 continue
 
-            # Additional validation for required columns based on file type
+            # Validate columns
             validation_result = await validate_file_columns(content, upfile.filename, key)
             if not validation_result["valid"]:
                 invalid_files.append({
@@ -525,21 +781,18 @@ async def upload_files(
                 })
                 continue
 
-            # Log warnings but don't block upload
             if validation_result.get("warnings"):
                 validation_warnings.extend(validation_result["warnings"])
 
             uploaded_files_content[upfile.filename] = content
 
         if invalid_files:
-            # Attempt ingestion rollback for failures where applicable
             for bad in invalid_files:
                 try:
                     rollback_manager.ingestion_rollback(run_id, bad.get('filename', bad.get('field','')), bad.get('error',''))
                 except Exception:
                     pass
 
-            # Log validation warnings
             if validation_warnings:
                 logger.info(f"Upload validation warnings: {validation_warnings}")
 
@@ -549,10 +802,10 @@ async def upload_files(
                 error_response["warnings"] = validation_warnings
             raise HTTPException(status_code=400, detail=error_response)
 
-        # Save uploaded files into run/cycle subfolder
+        # Save files
         run_folder = file_handler.save_uploaded_files(uploaded_files_content, run_id, cycle=cycle, direction=direction, run_date=run_date)
 
-        # Audit log
+        # Audit
         for fname, content in uploaded_files_content.items():
             audit.log_file_upload(run_id, fname, len(content), user_id='system', status='success')
 
@@ -676,10 +929,11 @@ async def run_reconciliation(run_request: ReconRunRequest, user: dict = Depends(
                 
                 # Generate CSV/XLSX reports from UPI results
                 try:
+                    logger.info(f"Generating UPI reports in {output_run_dir}")
                     recon_engine.generate_upi_report(results, output_run_dir, run_id=run_id)
-                    logger.info(f"UPI reports generated successfully")
+                    logger.info(f"UPI reports generated successfully in {output_run_dir}/reports")
                 except Exception as e:
-                    logger.warning(f"Could not generate UPI CSV reports: {e}")
+                    logger.error(f"Could not generate UPI CSV reports: {e}", exc_info=True)
             except Exception as e:
                 logger.error(f"Failed to save UPI results: {e}")
         else:
@@ -1081,11 +1335,46 @@ async def get_latest_hanging(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail="Failed to retrieve hanging list")
 
 
+@app.get("/api/v1/reports/gl-statement")
+async def download_gl_statement(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download GL statement for a run"""
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+
+        # Look for GL statement in OUTPUT_DIR first, then UPLOAD_DIR
+        gl_files = []
+        out_gl = os.path.join(OUTPUT_DIR, target, 'gl_statement')
+        if os.path.exists(out_gl):
+            gl_files = [os.path.join(out_gl, f) for f in os.listdir(out_gl) if f.endswith(('.xlsx', '.csv'))]
+
+        if not gl_files:
+            up_gl = os.path.join(UPLOAD_DIR, target, 'gl_statement')
+            if os.path.exists(up_gl):
+                gl_files = [os.path.join(up_gl, f) for f in os.listdir(up_gl) if f.endswith(('.xlsx', '.csv'))]
+
+        if not gl_files:
+            raise HTTPException(status_code=404, detail="GL statement not found")
+
+        # Return first GL file found
+        gl_file = gl_files[0]
+
+        # Audit log download
+        audit.log_data_export(target, os.path.basename(gl_file), 'gl_statement', user_id=user.get('username', 'system'))
+
+        return FileResponse(gl_file, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if gl_file.endswith('.xlsx') else 'text/csv', filename=os.path.basename(gl_file))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GL statement download error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download GL statement")
+
+
 @app.get("/api/v1/reports/ttum")
 async def download_ttum(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
-    """Package TTUM CSVs/XLSX for a run into a ZIP and return. Supports OUTPUT_DIR-first (UPI) and legacy UPLOAD_DIR.
-    Sets a persistent is_downloaded flag to disable subsequent accounting rollbacks.
-    """
+    """Package TTUM CSVs/XLSX for a run into a ZIP and return."""
     import zipfile
     try:
         runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
@@ -1093,7 +1382,7 @@ async def download_ttum(user: dict = Depends(get_current_user), run_id: Optional
             raise HTTPException(status_code=404, detail="No runs found")
         target = run_id if run_id else sorted(runs)[-1]
 
-        # Prefer OUTPUT_DIR/<run>/ttum for UPI runs
+        # Get TTUM files
         candidate_dirs = []
         out_ttum = os.path.join(OUTPUT_DIR, target, 'ttum')
         up_ttum = None
@@ -1110,7 +1399,6 @@ async def download_ttum(user: dict = Depends(get_current_user), run_id: Optional
         if not candidate_dirs:
             raise HTTPException(status_code=404, detail="TTUM folder not found for run")
 
-        # Build ZIP from first existing candidate (OUTPUT_DIR preferred)
         ttum_dir = candidate_dirs[0]
         zip_path = os.path.join(ttum_dir, f"ttum_{target}.zip")
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -1119,7 +1407,7 @@ async def download_ttum(user: dict = Depends(get_current_user), run_id: Optional
                 if os.path.isfile(fp):
                     zf.write(fp, arcname=fname)
 
-        # Set persistent download flag (for rollback manager)
+        # Set download flag
         try:
             meta_path = os.path.join(out_ttum, 'download_meta.json')
             os.makedirs(out_ttum, exist_ok=True)
@@ -1152,16 +1440,42 @@ async def download_ttum_csv(user: dict = Depends(get_current_user), run_id: Opti
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         target_run = run_id if run_id else sorted(runs)[-1]
-        
+
         # Get TTUM files from output directory
         from reporting import get_ttum_files
         ttum_files = get_ttum_files(target_run, cycle_id, format='csv')
-        
+
+        logger.info(f"TTUM CSV files found for run {target_run}: {ttum_files}")
+
         if not ttum_files:
             raise HTTPException(status_code=404, detail="No TTUM CSV files found")
-        
+
+        # Check file existence and sizes
+        for fp in ttum_files:
+            if os.path.exists(fp):
+                size = os.path.getsize(fp)
+                logger.info(f"TTUM file exists: {fp}, size: {size} bytes")
+                # Log first few lines to verify content
+                try:
+                    with open(fp, 'r', encoding='utf-8-sig') as f:
+                        lines = []
+                        for i, line in enumerate(f):
+                            if i >= 5:  # First 5 lines
+                                break
+                            lines.append(repr(line.strip()))
+                        logger.info(f"TTUM file content preview: {lines}")
+                except Exception as e:
+                    logger.error(f"Error reading TTUM file content: {e}")
+            else:
+                logger.error(f"TTUM file missing: {fp}")
+
         # If single file, return it directly
         if len(ttum_files) == 1:
+            file_path = ttum_files[0]
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="TTUM CSV file not found")
+            file_size = os.path.getsize(file_path)
+            logger.info(f"Returning single TTUM CSV file: {file_path}, size: {file_size} bytes")
             # Set download flag
             try:
                 out_ttum = os.path.join(OUTPUT_DIR, target_run, 'ttum')
@@ -1170,16 +1484,22 @@ async def download_ttum_csv(user: dict = Depends(get_current_user), run_id: Opti
                     json.dump({'is_downloaded': True, 'downloaded_at': datetime.utcnow().isoformat(), 'downloaded_by': user.get('username','unknown')}, mf, indent=2)
             except Exception:
                 pass
-            return FileResponse(ttum_files[0], media_type='text/csv', filename=os.path.basename(ttum_files[0]))
-        
+            return FileResponse(file_path, media_type='text/csv', filename=os.path.basename(file_path))
+
         # Multiple files - zip them
         zip_path = os.path.join(OUTPUT_DIR, target_run, f"ttum_csv_{target_run}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
         os.makedirs(os.path.dirname(zip_path), exist_ok=True)
-        
+
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for file_path in ttum_files:
-                zf.write(file_path, arcname=os.path.basename(file_path))
-        
+                if os.path.exists(file_path):
+                    zf.write(file_path, arcname=os.path.basename(file_path))
+                else:
+                    logger.warning(f"Skipping missing file: {file_path}")
+
+        zip_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
+        logger.info(f"Created TTUM ZIP: {zip_path}, size: {zip_size} bytes")
+
         # Set download flag
         try:
             out_ttum = os.path.join(OUTPUT_DIR, target_run, 'ttum')
@@ -1195,6 +1515,8 @@ async def download_ttum_csv(user: dict = Depends(get_current_user), run_id: Opti
     except Exception as e:
         logger.error(f"TTUM CSV download error: {e}")
         raise HTTPException(status_code=500, detail="Failed to download TTUM CSV files")
+
+
 
 
 @app.get("/api/v1/reports/ttum/xlsx")
@@ -1781,18 +2103,18 @@ async def get_unmatched_report(user: dict = Depends(get_current_user)):
         if not runs:
             raise HTTPException(status_code=404, detail="No runs found")
         latest = sorted(runs)[-1]
-        
+
         # First check OUTPUT_DIR (UPI results)
         recon_out = os.path.join(OUTPUT_DIR, latest, 'recon_output.json')
         if os.path.exists(recon_out):
             with open(recon_out, 'r') as f:
                 data = json.load(f)
-            
+
             # Extract unmatched from UPI format
-            if isinstance(data, dict) and 'summary' in data:
+            if isinstance(data, dict) and 'exceptions' in data:
                 # UPI format - return exceptions as array for easier frontend processing
                 exceptions_list = data.get('exceptions', [])
-                
+
                 # Ensure exceptions have direction field for frontend filtering
                 for exc in exceptions_list:
                     if 'direction' not in exc and 'debit_credit' in exc:
@@ -1803,16 +2125,16 @@ async def get_unmatched_report(user: dict = Depends(get_current_user)):
                             exc['direction'] = 'OUTWARD'
                         else:
                             exc['direction'] = 'UNKNOWN'
-                
+
                 return JSONResponse(content={
-                    "run_id": latest, 
+                    "run_id": latest,
                     "data": exceptions_list,
                     "format": "upi_array",
                     "summary": data.get('summary', {}),
                     "total_exceptions": len(exceptions_list)
                 })
-        
-        # Then check UPLOAD_DIR (legacy results)
+
+        # Check for legacy format (RRN keyed dict)
         run_root = os.path.join(UPLOAD_DIR, latest)
         recon_out = None
         for root_dir, dirs, files in os.walk(run_root):
@@ -1820,17 +2142,49 @@ async def get_unmatched_report(user: dict = Depends(get_current_user)):
                 recon_out = os.path.join(root_dir, 'recon_output.json')
                 break
 
-        if not recon_out or not os.path.exists(recon_out):
-            raise HTTPException(status_code=404, detail="Reconciliation output not found")
+        if recon_out and os.path.exists(recon_out):
+            with open(recon_out, 'r') as f:
+                data = json.load(f)
 
-        with open(recon_out, 'r') as f:
-            data = json.load(f)
+            # Convert legacy RRN dict to exceptions array
+            exceptions_list = []
+            if isinstance(data, dict):
+                for rrn, record in data.items():
+                    if isinstance(record, dict) and record.get('status') in ['ORPHAN', 'PARTIAL_MATCH', 'MISMATCH', 'PARTIAL_MISMATCH']:
+                        # Determine source and get data
+                        source_data = None
+                        source = 'UNKNOWN'
+                        if record.get('cbs'):
+                            source_data = record['cbs']
+                            source = 'CBS'
+                        elif record.get('switch'):
+                            source_data = record['switch']
+                            source = 'SWITCH'
+                        elif record.get('npci'):
+                            source_data = record['npci']
+                            source = 'NPCI'
 
-        # Return legacy format (already keyed by RRN)
-        if isinstance(data, dict):
-            return JSONResponse(content={"run_id": latest, "data": data, "format": "legacy"})
-        else:
-            return JSONResponse(content={"run_id": latest, "data": {}, "format": "legacy"})
+                        if source_data:
+                            exc = {
+                                'rrn': rrn,
+                                'amount': source_data.get('amount', 0),
+                                'date': source_data.get('date', ''),
+                                'reference': source_data.get('reference', ''),
+                                'debit_credit': source_data.get('dr_cr', ''),
+                                'exception_type': record.get('status', 'UNKNOWN'),
+                                'source': source
+                            }
+                            exceptions_list.append(exc)
+
+            return JSONResponse(content={
+                "run_id": latest,
+                "data": exceptions_list,
+                "format": "upi_array",
+                "summary": {},
+                "total_exceptions": len(exceptions_list)
+            })
+
+        raise HTTPException(status_code=404, detail="Reconciliation output not found")
 
     except HTTPException:
         raise
@@ -2005,7 +2359,23 @@ async def download_adjustments(user: dict = Depends(get_current_user), run_id: O
                 break
 
         if annex_path and os.path.exists(annex_path):
-            return FileResponse(annex_path, media_type='text/csv', filename=os.path.basename(annex_path))
+            filename = os.path.basename(annex_path)
+
+            # Read file content
+            with open(annex_path, 'rb') as f:
+                content = f.read()
+
+            # Set appropriate headers
+            headers = {}
+            if filename.endswith('.xlsx'):
+                content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            else:
+                content_type = 'text/csv; charset=utf-8'
+
+            headers['Content-Type'] = content_type
+            headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+            return Response(content=content, headers=headers, media_type=content_type)
         else:
             raise HTTPException(status_code=404, detail='Annexure file not found for run')
     except HTTPException:
@@ -2031,9 +2401,25 @@ async def download_matched_csv(user: dict = Depends(get_current_user), run_id: O
                 if 'matched' in f.lower() and f.endswith('.csv'):
                     csv_file = os.path.join(output_dir, f)
                     break
-            
+
             if csv_file and os.path.exists(csv_file):
-                return FileResponse(csv_file, media_type='text/csv', filename='matched_transactions.csv')
+                filename = os.path.basename(csv_file)
+
+                # Read file content
+                with open(csv_file, 'rb') as f:
+                    content = f.read()
+
+                # Set appropriate headers
+                headers = {}
+                if filename.endswith('.xlsx'):
+                    content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                else:
+                    content_type = 'text/csv; charset=utf-8'
+
+                headers['Content-Type'] = content_type
+                headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+                return Response(content=content, headers=headers, media_type=content_type)
         
         # Try UPLOAD_DIR
         run_folder = os.path.join(UPLOAD_DIR, target)
@@ -2046,7 +2432,24 @@ async def download_matched_csv(user: dict = Depends(get_current_user), run_id: O
         if reports_dir:
             for f in os.listdir(reports_dir):
                 if 'matched' in f.lower() and f.endswith('.csv'):
-                    return FileResponse(os.path.join(reports_dir, f), media_type='text/csv', filename='matched_transactions.csv')
+                    file_path = os.path.join(reports_dir, f)
+                    filename = os.path.basename(file_path)
+
+                    # Read file content
+                    with open(file_path, 'rb') as file:
+                        content = file.read()
+
+                    # Set appropriate headers
+                    headers = {}
+                    if filename.endswith('.xlsx'):
+                        content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    else:
+                        content_type = 'text/csv; charset=utf-8'
+
+                    headers['Content-Type'] = content_type
+                    headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+                    return Response(content=content, headers=headers, media_type=content_type)
         
         raise HTTPException(status_code=404, detail="Matched CSV report not found")
     except HTTPException:
@@ -2054,6 +2457,82 @@ async def download_matched_csv(user: dict = Depends(get_current_user), run_id: O
     except Exception as e:
         logger.error(f"Download matched CSV error: {e}")
         raise HTTPException(status_code=500, detail="Failed to download matched CSV")
+
+
+# New endpoints for specific report types requested by frontend
+@app.get("/api/v1/reports/{report_type:path}")
+async def download_specific_report(report_type: str, user: dict = Depends(get_current_user), run_id: Optional[str] = None):
+    """Download specific report type - handles all frontend report requests with nested paths"""
+    try:
+        runs = [d for d in os.listdir(UPLOAD_DIR) if d.startswith('RUN_')]
+        if not runs:
+            raise HTTPException(status_code=404, detail="No runs found")
+        target = run_id if run_id else sorted(runs)[-1]
+        
+        # Map frontend report types to backend file patterns
+        report_mapping = {
+            # Listing reports
+            'cbs_beneficiary': ['cbs_beneficiary', 'cbs_inward', 'listing_1'],
+            'cbs_remitter': ['cbs_remitter', 'cbs_outward', 'listing_2'],
+            'switch_inward': ['switch_inward', 'listing_3'],
+            'switch_outward': ['switch_outward', 'listing_4'],
+            'npci_inward': ['npci_inward', 'listing_5'],
+            'npci_outward': ['npci_outward', 'listing_6'],
+            # Reconciliation reports
+            'recon/gl_vs_switch/matched/inward': ['GL_vs_Switch_Inward', 'gl_vs_switch_inward'],
+            'recon/gl_vs_switch/matched/outward': ['GL_vs_Switch_Outward', 'gl_vs_switch_outward'],
+            'recon/gl_vs_switch/unmatched/inward': ['Unmatched_Inward_Ageing', 'unmatched_inward'],
+            'recon/gl_vs_switch/unmatched/outward': ['Unmatched_Outward_Ageing', 'unmatched_outward'],
+            'recon/switch_vs_network/matched/inward': ['Switch_vs_NPCI_Inward', 'switch_vs_npci_inward'],
+            'recon/switch_vs_network/matched/outward': ['Switch_vs_NPCI_Outward', 'switch_vs_npci_outward'],
+            'recon/switch_vs_network/unmatched/inward': ['Unmatched_Inward_Ageing', 'unmatched_inward'],
+            'recon/switch_vs_network/unmatched/outward': ['Unmatched_Outward_Ageing', 'unmatched_outward'],
+            'recon/gl_vs_network/matched/inward': ['GL_vs_NPCI_Inward', 'gl_vs_npci_inward'],
+            'recon/gl_vs_network/matched/outward': ['GL_vs_NPCI_Outward', 'gl_vs_npci_outward'],
+            'recon/gl_vs_network/unmatched/inward': ['Unmatched_Inward_Ageing', 'unmatched_inward'],
+            'recon/gl_vs_network/unmatched/outward': ['Unmatched_Outward_Ageing', 'unmatched_outward'],
+            'recon/hanging_transactions/inward': ['Hanging_Inward', 'hanging_inward'],
+            'recon/hanging_transactions/outward': ['Hanging_Outward', 'hanging_outward'],
+            # TTUM and Annexure
+            'ttum': ['ttum_candidates'],
+            'annexure/i/raw': ['annexure_i', 'ANNEXURE_I'],
+            'annexure/ii/raw': ['annexure_ii', 'ANNEXURE_II'],
+            'annexure/iii/adjustment': ['annexure_iii', 'ANNEXURE_III', 'annexure_iv'],
+            'annexure/iv/bulk': ['annexure_iv', 'ANNEXURE_IV'],
+        }
+        
+        patterns = report_mapping.get(report_type, [report_type.replace('/', '_')])
+        
+        # Search in OUTPUT_DIR first
+        output_dir = os.path.join(OUTPUT_DIR, target, 'reports')
+        if os.path.exists(output_dir):
+            for f in os.listdir(output_dir):
+                for pattern in patterns:
+                    if pattern.lower() in f.lower() and f.endswith(('.csv', '.xlsx')):
+                        file_path = os.path.join(output_dir, f)
+                        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                        logger.info(f"Returning specific report from OUTPUT_DIR: {file_path}, size: {file_size} bytes, filename: {f}")
+                        media_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if f.endswith('.xlsx') else 'text/csv'
+                        return FileResponse(file_path, media_type=media_type, filename=f)
+
+        # Search in UPLOAD_DIR
+        run_folder = os.path.join(UPLOAD_DIR, target)
+        for root_dir, dirs, files in os.walk(run_folder):
+            for f in files:
+                for pattern in patterns:
+                    if pattern.lower() in f.lower() and f.endswith(('.csv', '.xlsx')):
+                        file_path = os.path.join(root_dir, f)
+                        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                        logger.info(f"Returning specific report from UPLOAD_DIR: {file_path}, size: {file_size} bytes, filename: {f}")
+                        media_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if f.endswith('.xlsx') else 'text/csv'
+                        return FileResponse(file_path, media_type=media_type, filename=f)
+        
+        raise HTTPException(status_code=404, detail=f"Report '{report_type}' not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download specific report error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download report")
 
 @app.get("/api/v1/reports/unmatched/csv")
 async def download_unmatched_csv(user: dict = Depends(get_current_user), run_id: Optional[str] = None):
@@ -2074,7 +2553,23 @@ async def download_unmatched_csv(user: dict = Depends(get_current_user), run_id:
                     break
 
             if csv_file and os.path.exists(csv_file):
-                return FileResponse(csv_file, media_type='text/csv', filename='unmatched_exceptions.csv')
+                filename = os.path.basename(csv_file)
+
+                # Read file content
+                with open(csv_file, 'rb') as f:
+                    content = f.read()
+
+                # Set appropriate headers
+                headers = {}
+                if filename.endswith('.xlsx'):
+                    content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                else:
+                    content_type = 'text/csv; charset=utf-8'
+
+                headers['Content-Type'] = content_type
+                headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+                return Response(content=content, headers=headers, media_type=content_type)
 
         # Try UPLOAD_DIR
         run_folder = os.path.join(UPLOAD_DIR, target)
@@ -2087,7 +2582,24 @@ async def download_unmatched_csv(user: dict = Depends(get_current_user), run_id:
         if reports_dir:
             for f in os.listdir(reports_dir):
                 if 'unmatched' in f.lower() and f.endswith('.csv'):
-                    return FileResponse(os.path.join(reports_dir, f), media_type='text/csv', filename='unmatched_exceptions.csv')
+                    file_path = os.path.join(reports_dir, f)
+                    filename = os.path.basename(file_path)
+
+                    # Read file content
+                    with open(file_path, 'rb') as file:
+                        content = file.read()
+
+                    # Set appropriate headers
+                    headers = {}
+                    if filename.endswith('.xlsx'):
+                        content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    else:
+                        content_type = 'text/csv; charset=utf-8'
+
+                    headers['Content-Type'] = content_type
+                    headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+                    return Response(content=content, headers=headers, media_type=content_type)
 
         raise HTTPException(status_code=404, detail="Unmatched CSV report not found")
     except HTTPException:
@@ -2134,7 +2646,24 @@ async def download_ageing_reports(user: dict = Depends(get_current_user), run_id
 
         # If single file, return it directly
         if len(ageing_files) == 1:
-            return FileResponse(ageing_files[0], media_type='text/csv', filename=os.path.basename(ageing_files[0]))
+            file_path = ageing_files[0]
+            filename = os.path.basename(file_path)
+
+            # Read file content
+            with open(file_path, 'rb') as f:
+                content = f.read()
+
+            # Set appropriate headers
+            headers = {}
+            if filename.endswith('.xlsx'):
+                content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            else:
+                content_type = 'text/csv; charset=utf-8'
+
+            headers['Content-Type'] = content_type
+            headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+            return Response(content=content, headers=headers, media_type=content_type)
 
         # Multiple files - zip them
         zip_path = os.path.join(OUTPUT_DIR, target, f"ageing_reports_{target}.zip")
@@ -2189,7 +2718,24 @@ async def download_hanging_reports(user: dict = Depends(get_current_user), run_i
 
         # If single file, return it directly
         if len(hanging_files) == 1:
-            return FileResponse(hanging_files[0], media_type='text/csv', filename=os.path.basename(hanging_files[0]))
+            file_path = hanging_files[0]
+            filename = os.path.basename(file_path)
+
+            # Read file content
+            with open(file_path, 'rb') as f:
+                content = f.read()
+
+            # Set appropriate headers
+            headers = {}
+            if filename.endswith('.xlsx'):
+                content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            else:
+                content_type = 'text/csv; charset=utf-8'
+
+            headers['Content-Type'] = content_type
+            headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+            return Response(content=content, headers=headers, media_type=content_type)
 
         # Multiple files - zip them
         zip_path = os.path.join(OUTPUT_DIR, target, f"hanging_reports_{target}.zip")
@@ -2222,7 +2768,23 @@ async def download_switch_update_file(user: dict = Depends(get_current_user), ru
             for f in os.listdir(output_dir):
                 if 'switch_update' in f.lower() and f.endswith('.csv'):
                     file_path = os.path.join(output_dir, f)
-                    return FileResponse(file_path, media_type='text/csv', filename=f)
+                    filename = os.path.basename(file_path)
+
+                    # Read file content
+                    with open(file_path, 'rb') as file:
+                        content = file.read()
+
+                    # Set appropriate headers
+                    headers = {}
+                    if filename.endswith('.xlsx'):
+                        content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    else:
+                        content_type = 'text/csv; charset=utf-8'
+
+                    headers['Content-Type'] = content_type
+                    headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+                    return Response(content=content, headers=headers, media_type=content_type)
 
         # Try UPLOAD_DIR
         run_folder = os.path.join(UPLOAD_DIR, target)
@@ -2236,7 +2798,23 @@ async def download_switch_update_file(user: dict = Depends(get_current_user), ru
             for f in os.listdir(reports_dir):
                 if 'switch_update' in f.lower() and f.endswith('.csv'):
                     file_path = os.path.join(reports_dir, f)
-                    return FileResponse(file_path, media_type='text/csv', filename=f)
+                    filename = os.path.basename(file_path)
+
+                    # Read file content
+                    with open(file_path, 'rb') as file:
+                        content = file.read()
+
+                    # Set appropriate headers
+                    headers = {}
+                    if filename.endswith('.xlsx'):
+                        content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    else:
+                        content_type = 'text/csv; charset=utf-8'
+
+                    headers['Content-Type'] = content_type
+                    headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+                    return Response(content=content, headers=headers, media_type=content_type)
 
         raise HTTPException(status_code=404, detail="Switch Update File not found")
     except HTTPException:
@@ -2279,7 +2857,24 @@ async def download_annexure_reports(user: dict = Depends(get_current_user), run_
 
         # If single file, return it directly
         if len(annexure_files) == 1:
-            return FileResponse(annexure_files[0], media_type='text/csv', filename=os.path.basename(annexure_files[0]))
+            file_path = annexure_files[0]
+            filename = os.path.basename(file_path)
+
+            # Read file content
+            with open(file_path, 'rb') as f:
+                content = f.read()
+
+            # Set appropriate headers
+            headers = {}
+            if filename.endswith('.xlsx'):
+                content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            else:
+                content_type = 'text/csv; charset=utf-8'
+
+            headers['Content-Type'] = content_type
+            headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+            return Response(content=content, headers=headers, media_type=content_type)
 
         # Multiple files - zip them
         zip_path = os.path.join(OUTPUT_DIR, target, f"annexure_reports_{target}.zip")
