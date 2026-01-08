@@ -232,19 +232,27 @@ export default function Rollback() {
 
       switch (rollbackLevel) {
         case "ttum":
-          result = await apiClient.rollbackTTUM(selectedRun, reason);
+          // TTUM rollback - only deletes TTUM reports
+          result = await apiClient.rollbackAccounting(selectedRun, reason);
           break;
         case "reports":
-          result = await apiClient.rollbackReports(selectedRun, reason);
+          // Reports rollback - deletes whole report but not recon output
+          result = await apiClient.rollbackMidRecon(selectedRun, reason);
           break;
         case "recon":
-          result = await apiClient.rollbackRecon(selectedRun, reason);
+          // Recon rollback - deletes output + reports but not uploads
+          result = await apiClient.rollbackMidRecon(selectedRun, reason);
           break;
         case "file":
-          result = await apiClient.rollbackFile(selectedRun, reason);
+          // File rollback - cycle-wise rollback with cycle selection
+          if (!cycleId) {
+            throw new Error("Cycle ID is required for file rollback");
+          }
+          result = await apiClient.rollbackCycleWise(selectedRun, cycleId);
           break;
         case "complete":
-          result = await apiClient.rollbackComplete(selectedRun, reason);
+          // Complete rollback - deletes uploads + whole reports
+          result = await apiClient.rollbackWholeProcess(selectedRun, reason);
           break;
         default:
           throw new Error("Invalid rollback level");
@@ -437,6 +445,48 @@ export default function Rollback() {
                 </div>
               </div>
 
+              {/* Cycle Selection for File Rollback */}
+              {rollbackLevel === 'file' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">Select Cycle for File Rollback</label>
+                  <Select value={cycleId} onValueChange={setCycleId}>
+                    <SelectTrigger className="border-slate-300">
+                      <SelectValue placeholder="Select a cycle (1C, 2C, ..., 10C)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {cyclesLoading ? (
+                        <div className="flex items-center justify-center py-2">
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          Loading cycles...
+                        </div>
+                      ) : availableCycles?.available_cycles?.length ? (
+                        availableCycles.available_cycles.map((cycle) => (
+                          <SelectItem key={cycle} value={cycle}>
+                            Cycle {cycle}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <>
+                          <SelectItem value="1C">Cycle 1C</SelectItem>
+                          <SelectItem value="2C">Cycle 2C</SelectItem>
+                          <SelectItem value="3C">Cycle 3C</SelectItem>
+                          <SelectItem value="4C">Cycle 4C</SelectItem>
+                          <SelectItem value="5C">Cycle 5C</SelectItem>
+                          <SelectItem value="6C">Cycle 6C</SelectItem>
+                          <SelectItem value="7C">Cycle 7C</SelectItem>
+                          <SelectItem value="8C">Cycle 8C</SelectItem>
+                          <SelectItem value="9C">Cycle 9C</SelectItem>
+                          <SelectItem value="10C">Cycle 10C</SelectItem>
+                        </>
+                      )}
+                    </SelectContent>
+                  </Select>
+                  {rollbackLevel === 'file' && !cycleId && (
+                    <p className="text-xs text-red-500 mt-1">Please select a cycle for file rollback</p>
+                  )}
+                </div>
+              )}
+
               {/* TTUM Guardrail */}
               {rollbackLevel === 'ttum' && ttumDownloaded && (
                 <Alert variant="destructive">
@@ -465,7 +515,7 @@ export default function Rollback() {
                 size="lg"
                 className="w-full bg-brand-blue hover:bg-brand-mid"
                 onClick={() => setShowConfirmDialog(true)}
-                disabled={!selectedRun || isRollingBack}
+                disabled={!selectedRun || isRollingBack || (rollbackLevel === 'file' && !cycleId)}
               >
                 {isRollingBack ? (
                   <>

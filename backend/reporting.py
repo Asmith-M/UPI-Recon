@@ -22,8 +22,14 @@ except ImportError:
 
 def _ensure_run_dirs(run_id: str):
     base = os.path.join(OUTPUT_DIR, run_id)
+    # Main directories
     for sub in ('reports', 'ttum', 'annexure', 'audit'):
         os.makedirs(os.path.join(base, sub), exist_ok=True)
+
+    # Segmented subdirectories under reports/
+    reports_base = os.path.join(base, 'reports')
+    for sub in ('ttum & annex', 'listing', 'reconciliation', 'legacy'):
+        os.makedirs(os.path.join(reports_base, sub), exist_ok=True)
 
 
 # Removed _format_value to preserve native numeric/date types in outputs

@@ -29,10 +29,10 @@ export default function FileUpload() {
   const uploadMutation = useMutation({
     mutationFn: async () => {
       // Validate mandatory fields
-      if (!selectedCycle || selectedCycle === "all") {
+      if (!selectedCycle) {
         throw new Error("Please select a Cycle (1-10)");
       }
-      if (!selectedDirection || selectedDirection === "all") {
+      if (!selectedDirection) {
         throw new Error("Please select a Direction (Inward/Outward)");
       }
       if (!cbsInward || !cbsOutward || !switchFile) {
@@ -163,78 +163,34 @@ export default function FileUpload() {
             NPCI Files
           </TabsTrigger>
         </TabsList>
-
-        {/* Mandatory Fields Card */}
-        <Card className="shadow-lg mt-6">
-          <CardContent className="pt-6">
-            <div className="grid grid-cols-4 gap-4">
-              <div className="space-y-2">
-                <Label className="text-base font-semibold">Cycle (1-10) *</Label>
-                <CycleSelector 
-                  value={selectedCycle} 
-                  onValueChange={setSelectedCycle}
-                />
-                {!selectedCycle && (
-                  <p className="text-xs text-red-500">Required field</p>
-                )}
-              </div>
-              <div className="space-y-2">
-                <Label className="text-base font-semibold">Direction *</Label>
-                <DirectionSelector 
-                  value={selectedDirection} 
-                  onValueChange={setSelectedDirection}
-                />
-                {!selectedDirection && (
-                  <p className="text-xs text-red-500">Required field</p>
-                )}
-              </div>
-              <div className="space-y-2">
-                <Label className="text-base font-semibold">Transaction Date</Label>
-                <Input
-                  type="date"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  className="w-full"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label className="text-base font-semibold">CBS Closing Balance</Label>
-                <div className="flex gap-2">
-                  <Input
-                    type="number"
-                    placeholder="Enter balance"
-                    value={cbsBalanceInput}
-                    onChange={(e) => setCbsBalanceInput(e.target.value)}
-                    className="flex-1"
-                  />
-                  <Button
-                    variant="outline"
-                    className="rounded-full"
-                    onClick={() => setCbsBalance(cbsBalanceInput)}
-                  >
-                    Update
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
+       
         {/* CBS/GL File Tab */}
         <TabsContent value="cbs">
           <div className="space-y-6 mt-6">
             <div className="text-sm text-muted-foreground">
               <p>Upload your CBS (Core Banking System) and GL (General Ledger) files for reconciliation.</p>
             </div>
-            <div className="space-y-2">
-              <Label>Date:</Label>
-              <Input
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className="w-64"
-              />
-              <p className="text-xs text-muted-foreground">(Default Set to 'T' Day)</p>
+
+            {/* Required Fields - Compact */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Cycle *</Label>
+                  <CycleSelector
+                    value={selectedCycle}
+                    onValueChange={setSelectedCycle}
+                    className="w-full"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Direction *</Label>
+                  <DirectionSelector
+                    value={selectedDirection}
+                    onValueChange={setSelectedDirection}
+                    className="w-full"
+                  />
+                </div>
+              </div>
             </div>
 
             <Card className="shadow-lg">

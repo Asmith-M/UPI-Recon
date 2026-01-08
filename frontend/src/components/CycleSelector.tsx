@@ -15,7 +15,6 @@ export default function CycleSelector({ value, onValueChange, className }: Cycle
         <SelectValue placeholder="Select Cycle" />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="all">All Cycles</SelectItem>
         {CYCLES.map(cycle => (
           <SelectItem key={cycle} value={cycle}>{cycle}</SelectItem>
         ))}

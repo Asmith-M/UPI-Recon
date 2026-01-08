@@ -1100,8 +1100,10 @@ class ReconciliationEngine:
 
         if annexure_i_rows:
             df_i = pd.DataFrame(annexure_i_rows)
-            annexure_i_path_csv = os.path.join(reports_dir, 'ANNEXURE_I.csv')
-            annexure_i_path_xlsx = os.path.join(reports_dir, 'ANNEXURE_I.xlsx')
+            ttum_annex_dir = os.path.join(reports_dir, 'ttum & annex')
+            os.makedirs(ttum_annex_dir, exist_ok=True)
+            annexure_i_path_csv = os.path.join(ttum_annex_dir, 'ANNEXURE_I.csv')
+            annexure_i_path_xlsx = os.path.join(ttum_annex_dir, 'ANNEXURE_I.xlsx')
             df_i.to_csv(annexure_i_path_csv, index=False, encoding='utf-8')
             df_i.to_excel(annexure_i_path_xlsx, index=False, engine='openpyxl')
             logger.info(f"Generated ANNEXURE_I.csv and .xlsx with {len(annexure_i_rows)} records")
@@ -1120,8 +1122,10 @@ class ReconciliationEngine:
 
         if annexure_ii_rows:
             df_ii = pd.DataFrame(annexure_ii_rows)
-            annexure_ii_path_csv = os.path.join(reports_dir, 'ANNEXURE_II.csv')
-            annexure_ii_path_xlsx = os.path.join(reports_dir, 'ANNEXURE_II.xlsx')
+            ttum_annex_dir = os.path.join(reports_dir, 'ttum & annex')
+            os.makedirs(ttum_annex_dir, exist_ok=True)
+            annexure_ii_path_csv = os.path.join(ttum_annex_dir, 'ANNEXURE_II.csv')
+            annexure_ii_path_xlsx = os.path.join(ttum_annex_dir, 'ANNEXURE_II.xlsx')
             df_ii.to_csv(annexure_ii_path_csv, index=False, encoding='utf-8')
             df_ii.to_excel(annexure_ii_path_xlsx, index=False, engine='openpyxl')
             logger.info(f"Generated ANNEXURE_II.csv and .xlsx with {len(annexure_ii_rows)} records")

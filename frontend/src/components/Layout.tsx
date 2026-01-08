@@ -32,7 +32,7 @@ const menuItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/file-upload", label: "File Upload", icon: Upload },
   { path: "/view-status", label: "View Upload Status", icon: Eye },
-  { path: "/recon", label: "Recon Dashboard", icon: BarChart3 },
+  { path: "/recon", label: "Run Reconciliation", icon: BarChart3 },
   { path: "/unmatched", label: "Unmatched Dashboard", icon: AlertCircle },
   { path: "/force-match", label: "Force - Match", icon: GitMerge },
   { path: "/auto-match", label: "Auto-Match", icon: PlayCircle },

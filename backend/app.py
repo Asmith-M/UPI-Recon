@@ -2964,50 +2964,94 @@ async def get_latest_raw_data(user: dict = Depends(get_current_user)):
         if isinstance(data, dict) and 'summary' in data:
             summary = data.get('summary', {})
             
-            # Convert exceptions array to RRN-keyed dict with full transaction details for ForceMatch
-            exceptions_dict = {}
+            # First pass: count sources per RRN to determine PARTIAL_MATCH vs ORPHAN
+            rrn_source_count = {}
+            rrn_data = {}
+
             for exc in data.get('exceptions', []):
                 if isinstance(exc, dict):
                     rrn = exc.get('rrn') or exc.get('RRN')
                     if rrn:
-                        # Build transaction object compatible with ForceMatch
                         source = exc.get('source', '').lower()
-                        transaction = {
-                            'rrn': rrn,
-                            'status': 'ORPHAN',  # Default status for exceptions
-                            'amount': exc.get('amount', 0),
-                            'date': exc.get('date', ''),
-                            'reference': exc.get('reference', ''),
-                            'exception_type': exc.get('exception_type', ''),
-                            'ttum_required': exc.get('ttum_required', False),
-                            'ttum_type': exc.get('ttum_type', ''),
-                            'source': source
-                        }
-                        
-                        # Map the exception to the appropriate source field
-                        if source == 'cbs':
+                        if rrn not in rrn_source_count:
+                            rrn_source_count[rrn] = set()
+                            rrn_data[rrn] = exc  # Store one representative exception per RRN
+                        rrn_source_count[rrn].add(source)
+
+            logger.info(f"DEBUG: RRN source counts: {dict(rrn_source_count)}")
+
+            # Convert exceptions array to RRN-keyed dict with full transaction details for ForceMatch
+            exceptions_dict = {}
+            for rrn, sources in rrn_source_count.items():
+                exc = rrn_data[rrn]  # Use the representative exception data
+                source_count = len(sources)
+
+                # Determine status based on number of sources with data
+                # PARTIAL_MATCH if exactly 2 sources have data, ORPHAN if only 1 source
+                if source_count >= 2:  # Changed from == 2 to >= 2 to include all partial cases
+                    status = 'PARTIAL_MATCH'
+                else:
+                    status = 'ORPHAN'
+
+                logger.info(f"DEBUG: RRN {rrn} has {source_count} sources, status: {status}")
+
+                # Build transaction object compatible with ForceMatch
+                exception_type = exc.get('exception_type', '')
+                main_source = exc.get('source', '').lower()
+
+                transaction = {
+                    'rrn': rrn,
+                    'status': status,  # Use source-count-based status
+                    'amount': exc.get('amount', 0),
+                    'date': exc.get('date', ''),
+                    'reference': exc.get('reference', ''),
+                    'exception_type': exception_type,
+                    'ttum_required': exc.get('ttum_required', False),
+                    'ttum_type': exc.get('ttum_type', ''),
+                    'source': main_source,
+                    'sources_available': list(sources)  # Track which sources have data
+                }
+
+                # Map all available source data to the transaction
+                # We need to find data from all sources that have exceptions for this RRN
+                for src in sources:
+                    # Find the exception record for this specific source
+                    src_exc = None
+                    for e in data.get('exceptions', []):
+                        if e.get('rrn') == rrn and e.get('source', '').lower() == src:
+                            src_exc = e
+                            break
+
+                    if src_exc:
+                        if src == 'cbs':
                             transaction['cbs'] = {
                                 'rrn': rrn,
-                                'amount': exc.get('amount', 0),
-                                'date': exc.get('date', ''),
-                                'reference': exc.get('reference', '')
+                                'amount': src_exc.get('amount', 0),
+                                'date': src_exc.get('date', ''),
+                                'reference': src_exc.get('reference', ''),
+                                'debit_credit': src_exc.get('debit_credit', ''),
+                                'status': src_exc.get('status', '')
                             }
-                        elif source == 'switch':
+                        elif src == 'switch':
                             transaction['switch'] = {
                                 'rrn': rrn,
-                                'amount': exc.get('amount', 0),
-                                'date': exc.get('date', ''),
-                                'reference': exc.get('reference', '')
+                                'amount': src_exc.get('amount', 0),
+                                'date': src_exc.get('date', ''),
+                                'reference': src_exc.get('reference', ''),
+                                'debit_credit': src_exc.get('debit_credit', ''),
+                                'status': src_exc.get('status', '')
                             }
-                        elif source == 'npci':
+                        elif src == 'npci':
                             transaction['npci'] = {
                                 'rrn': rrn,
-                                'amount': exc.get('amount', 0),
-                                'date': exc.get('date', ''),
-                                'reference': exc.get('reference', '')
+                                'amount': src_exc.get('amount', 0),
+                                'date': src_exc.get('date', ''),
+                                'reference': src_exc.get('reference', ''),
+                                'debit_credit': src_exc.get('debit_credit', ''),
+                                'status': src_exc.get('status', '')
                             }
-                        
-                        exceptions_dict[rrn] = transaction
+
+                exceptions_dict[rrn] = transaction
             
             # If we have exceptions, return them in the expected format
             return JSONResponse(content={

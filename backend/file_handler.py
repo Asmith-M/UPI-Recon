@@ -19,26 +19,12 @@ class FileHandler:
         run_folder = os.path.join(UPLOAD_DIR, run_id)
         os.makedirs(run_folder, exist_ok=True)
 
-        # If cycle provided, compute a canonical cycle_id using run_date (prefer YYYY-MM-DD or YYYYMMDD)
+        # If cycle provided, use simple cycle naming like cycle_C1
         cycle_id = None
         if cycle:
-            # normalize run_date to YYYYMMDD
-            from datetime import datetime
-            run_date_str = None
-            if run_date:
-                for fmt in ('%Y-%m-%d', '%Y%m%d'):
-                    try:
-                        run_date_str = datetime.strptime(run_date, fmt).strftime('%Y%m%d')
-                        break
-                    except Exception:
-                        continue
-            # fallback to today's date if run_date invalid/missing
-            if not run_date_str:
-                run_date_str = datetime.now().strftime('%Y%m%d')
-
-            # sanitize cycle component
+            # Use simple cycle naming as requested (e.g., cycle_C1)
             safe_cycle = str(cycle).strip().replace(' ', '_')
-            cycle_id = f"{run_date_str}_{safe_cycle}"
+            cycle_id = safe_cycle
 
             cycle_folder_name = f"cycle_{cycle_id}"
             run_folder = os.path.join(run_folder, cycle_folder_name)
@@ -46,7 +32,11 @@ class FileHandler:
 
         # If direction provided, create direction subfolder
         if direction:
-            dir_folder = direction.lower()
+            # Use "inward" for inward and "outward" for outward as requested
+            if direction.upper() == 'INWARD':
+                dir_folder = 'inward'
+            else:
+                dir_folder = 'outward'
             run_folder = os.path.join(run_folder, dir_folder)
             os.makedirs(run_folder, exist_ok=True)
 

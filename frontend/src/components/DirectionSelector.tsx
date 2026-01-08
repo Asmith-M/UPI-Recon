@@ -13,7 +13,6 @@ export default function DirectionSelector({ value, onValueChange, className }: D
         <SelectValue placeholder="Select Direction" />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="all">All</SelectItem>
         <SelectItem value="inward">Inward</SelectItem>
         <SelectItem value="outward">Outward</SelectItem>
       </SelectContent>

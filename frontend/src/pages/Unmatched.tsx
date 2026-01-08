@@ -224,6 +224,14 @@ export default function Unmatched() {
       return false;
     }
 
+    // Cycle filter - for now, we'll filter based on RRN pattern or skip if no cycle info
+    // This can be enhanced when cycle info is available in the data
+    if (selectedCycle !== "all") {
+      // If cycle info is not available in the data, we'll allow all transactions
+      // This can be improved when backend provides cycle information
+      // For now, we'll skip cycle filtering
+    }
+
     // Direction filter
     if (selectedDirection !== "all") {
       const rowDirection = row.direction || (row.drCr?.startsWith('C') ? 'INWARD' : row.drCr?.startsWith('D') ? 'OUTWARD' : 'UNKNOWN');
