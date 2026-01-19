@@ -4,6 +4,7 @@ from typing import Optional
 import lookup
 import nlp
 import response_formatter
+import reports_api
 
 # Create FastAPI app
 app = FastAPI(
@@ -13,6 +14,9 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+# Include the reports router
+app.include_router(reports_api.router)
 
 
 @app.on_event("startup")
@@ -42,7 +46,7 @@ async def root():
         "status": "running",
         "data_loaded": len(lookup.RECON_DATA) > 0,
         "endpoints": {
-            "chatbot": "/api/v1/chatbot?rrn=123456789012",
+            "chatbot": "/api/v1/chatbot?rrn=636397811101708",
             "health": "/health",
             "stats": "/api/v1/stats",
             "reload": "/api/v1/reload (POST)",
@@ -72,22 +76,34 @@ async def health_check():
 
 @app.get("/api/v1/chatbot")
 async def chatbot_lookup(
-    rrn: Optional[str] = Query(None, description="12-digit Retrieval Reference Number"),
-    txn_id: Optional[str] = Query(None, description="Transaction ID (e.g., TXN001)")
+    rrn: Optional[str] = Query(None, description="12+ digit Retrieval Reference Number"),
+    txn_id: Optional[str] = Query(None, description="Transaction ID (e.g., TXN001)"),
+    txd_id: Optional[str] = Query(None, description="Transaction ID (alias for txn_id)")
 ):
     """
     Main chatbot endpoint - lookup transaction by RRN or Transaction ID.
-    
+
     Query Parameters:
-        - rrn: 12-digit RRN (optional)
+        - rrn: 12+ digit RRN (optional)
         - txn_id: Transaction ID (optional)
-        
+        - txd_id: Transaction ID alias (optional)
+
     Note: At least one parameter must be provided.
-    
+    If txn_id/txd_id is 12+ digits, it will be treated as RRN.
+
     Returns:
         Transaction details with reconciliation status across CBS, Switch, and NPCI systems.
     """
     try:
+        # Handle txd_id alias
+        if txd_id and not txn_id:
+            txn_id = txd_id
+        
+        # Auto-detect: if txn_id is 12+ digits, treat as RRN
+        if txn_id and len(txn_id) >= 12 and txn_id.isdigit():
+            rrn = txn_id
+            txn_id = None
+        
         # Step 1: Validate input - at least one parameter required
         if not rrn and not txn_id:
             error_response = response_formatter.format_validation_error(
@@ -159,10 +175,10 @@ async def chatbot_lookup(
             # Validate RRN format
             if not nlp.validate_rrn(rrn):
                 error_response = response_formatter.format_validation_error(
-                    "Invalid RRN format. RRN must be exactly 12 digits",
+                    "Invalid RRN format. RRN must be at least 12 digits",
                     details={
                         "provided": rrn,
-                        "expected_format": "12 digits (e.g., 123456789012)",
+                        "expected_format": "12 or more digits (e.g., 123456789012)",
                         "length": len(rrn)
                     }
                 )
@@ -280,5 +296,6 @@ async def reload_reconciliation_data():
 # Run with: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 if __name__ == "__main__":
     import uvicorn
+    import os
     # Chatbot runs on port 5001 for local development
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('CHATBOT_PORT', '5001')))

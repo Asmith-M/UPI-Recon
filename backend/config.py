@@ -1,10 +1,19 @@
 import os
 from datetime import datetime
 
+# ============================================================================
+# DEMO MODE CONFIGURATION (NON-NEGOTIABLE)
+# ============================================================================
+# DEMO = Scripted, Replayable, Explainable, Predictable
+# PROD = Real database, async jobs, dynamic generation
+APP_MODE = os.getenv("APP_MODE", "DEMO")  # DEMO | PROD
+
 # File paths
 UPLOAD_DIR = "data/uploads"
 OUTPUT_DIR = "data/output"
 SAMPLE_DATA_DIR = "sample_data"
+DEMO_DATA_DIR = "demo_data"
+REPORTS_STORE_DIR = "../reports_store"
 
 # Required fields for all files (our internal standard)
 REQUIRED_FIELDS = {

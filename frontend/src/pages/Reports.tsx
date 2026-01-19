@@ -1,530 +1,649 @@
 import { useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { FileText, Download, Loader2 } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Textarea } from "../components/ui/textarea";
+import { Download, Loader2, Plus, FileText, Calendar } from "lucide-react";
 import { apiClient } from "../lib/api";
 import { useToast } from "../hooks/use-toast";
 import { AxiosResponse } from "axios";
 
-interface ReportType {
+// Report category definitions
+interface ReportDefinition {
   id: string;
   name: string;
   description: string;
-  endpoint: string;
-  category?: string;
+  format: string;
 }
 
-// Listing Reports - Raw ingestion files
-const listingReports: ReportType[] = [
-  { 
-    id: "cbs_beneficiary",
-    name: "CBS Beneficiary (Raw)", 
-    description: "Raw beneficiary data from CBS",
-    endpoint: "cbs_beneficiary",
-    category: "listing"
-  },
-  { 
-    id: "cbs_remitter",
-    name: "CBS Remitter (Raw)", 
-    description: "Raw remitter data from CBS",
-    endpoint: "cbs_remitter",
-    category: "listing"
-  },
-  { 
-    id: "switch_inward",
-    name: "Switch Inward (Raw)", 
-    description: "Raw inward transaction data from Switch",
-    endpoint: "switch_inward",
-    category: "listing"
-  },
-  { 
-    id: "switch_outward",
-    name: "Switch Outward (Raw)", 
-    description: "Raw outward transaction data from Switch",
-    endpoint: "switch_outward",
-    category: "listing"
-  },
-  { 
-    id: "npci_inward",
-    name: "NPCI Inward (Raw)", 
-    description: "Raw inward transaction data from NPCI",
-    endpoint: "npci_inward",
-    category: "listing"
-  },
-  { 
-    id: "npci_outward",
-    name: "NPCI Outward (Raw)", 
-    description: "Raw outward transaction data from NPCI",
-    endpoint: "npci_outward",
-    category: "listing"
-  },
-];
-
-// Reconciliation Reports - Categorized by type and direction
-const reconReportsInward: ReportType[] = [
-  {
-    id: "gl_vs_switch_matched_inward",
-    name: "GL vs. Switch - Matched",
-    description: "Inward transactions matched between GL and Switch",
-    endpoint: "recon/gl_vs_switch/matched/inward",
-    category: "recon_inward"
-  },
-  {
-    id: "gl_vs_switch_unmatched_inward",
-    name: "GL vs. Switch - Unmatched (with Ageing)",
-    description: "Inward transactions unmatched between GL and Switch with aging analysis",
-    endpoint: "recon/gl_vs_switch/unmatched/inward",
-    category: "recon_inward"
-  },
-  {
-    id: "switch_vs_network_matched_inward",
-    name: "Switch vs. Network - Matched",
-    description: "Inward transactions matched between Switch and Network",
-    endpoint: "recon/switch_vs_network/matched/inward",
-    category: "recon_inward"
-  },
-  {
-    id: "switch_vs_network_unmatched_inward",
-    name: "Switch vs. Network - Unmatched (with Ageing)",
-    description: "Inward transactions unmatched between Switch and Network with aging analysis",
-    endpoint: "recon/switch_vs_network/unmatched/inward",
-    category: "recon_inward"
-  },
-  {
-    id: "gl_vs_network_matched_inward",
-    name: "GL vs. Network - Matched",
-    description: "Inward transactions matched between GL and Network",
-    endpoint: "recon/gl_vs_network/matched/inward",
-    category: "recon_inward"
-  },
-  {
-    id: "gl_vs_network_unmatched_inward",
-    name: "GL vs. Network - Unmatched (with Ageing)",
-    description: "Inward transactions unmatched between GL and Network with aging analysis",
-    endpoint: "recon/gl_vs_network/unmatched/inward",
-    category: "recon_inward"
-  },
-  {
-    id: "hanging_transactions_inward",
-    name: "Hanging Transactions",
-    description: "Inward transactions stuck in intermediate state",
-    endpoint: "recon/hanging_transactions/inward",
-    category: "recon_inward"
-  },
-];
-
-const reconReportsOutward: ReportType[] = [
-  {
-    id: "gl_vs_switch_matched_outward",
-    name: "GL vs. Switch - Matched",
-    description: "Outward transactions matched between GL and Switch",
-    endpoint: "recon/gl_vs_switch/matched/outward",
-    category: "recon_outward"
-  },
-  {
-    id: "gl_vs_switch_unmatched_outward",
-    name: "GL vs. Switch - Unmatched (with Ageing)",
-    description: "Outward transactions unmatched between GL and Switch with aging analysis",
-    endpoint: "recon/gl_vs_switch/unmatched/outward",
-    category: "recon_outward"
-  },
-  {
-    id: "switch_vs_network_matched_outward",
-    name: "Switch vs. Network - Matched",
-    description: "Outward transactions matched between Switch and Network",
-    endpoint: "recon/switch_vs_network/matched/outward",
-    category: "recon_outward"
-  },
-  {
-    id: "switch_vs_network_unmatched_outward",
-    name: "Switch vs. Network - Unmatched (with Ageing)",
-    description: "Outward transactions unmatched between Switch and Network with aging analysis",
-    endpoint: "recon/switch_vs_network/unmatched/outward",
-    category: "recon_outward"
-  },
-  {
-    id: "gl_vs_network_matched_outward",
-    name: "GL vs. Network - Matched",
-    description: "Outward transactions matched between GL and Network",
-    endpoint: "recon/gl_vs_network/matched/outward",
-    category: "recon_outward"
-  },
-  {
-    id: "gl_vs_network_unmatched_outward",
-    name: "GL vs. Network - Unmatched (with Ageing)",
-    description: "Outward transactions unmatched between GL and Network with aging analysis",
-    endpoint: "recon/gl_vs_network/unmatched/outward",
-    category: "recon_outward"
-  },
-  {
-    id: "hanging_transactions_outward",
-    name: "Hanging Transactions",
-    description: "Outward transactions stuck in intermediate state",
-    endpoint: "recon/hanging_transactions/outward",
-    category: "recon_outward"
-  },
-];
-
-// TTUM and Annexure Reports
-const ttumAnnexureReports: ReportType[] = [
-  {
-    id: "ttum_consolidated",
-    name: "Consolidated TTUM Report",
-    description: "Complete TTUM report (Refund, Recovery, Auto-credit, etc.)",
-    endpoint: "ttum",
-    category: "ttum"
-  },
-  {
-    id: "annexure_i_raw",
-    name: "Annexure I (Raw)",
-    description: "Raw Annexure I data for detailed review",
-    endpoint: "annexure/i/raw",
-    category: "ttum"
-  },
-  {
-    id: "annexure_ii_raw",
-    name: "Annexure II (Raw)",
-    description: "Raw Annexure II data for detailed review",
-    endpoint: "annexure/ii/raw",
-    category: "ttum"
-  },
-  {
-    id: "annexure_iii_adjustment",
-    name: "Annexure III (Adjustment Report)",
-    description: "Adjustment report with reconciliation details",
-    endpoint: "annexure/iii/adjustment",
-    category: "ttum"
-  },
-  {
-    id: "annexure_iv_bulk",
-    name: "Annexure IV (Bulk Upload)",
-    description: "Bulk upload format for system import",
-    endpoint: "annexure/iv/bulk",
-    category: "ttum"
-  },
-];
-
-// Legacy reports (keep for backward compatibility)
-const reportTypes: ReportType[] = [
-  { 
-    id: "matched",
-    name: "Matched Transactions (JSON)", 
-    description: "All successfully matched transactions across CBS, Switch, and NPCI",
-    endpoint: "matched"
-  },
-  { 
-    id: "unmatched",
-    name: "Unmatched Transactions (JSON)", 
-    description: "Transactions that couldn't be matched - includes partial matches and orphans",
-    endpoint: "unmatched"
-  },
-  { 
-    id: "summary",
-    name: "Reconciliation Summary (JSON)", 
-    description: "Complete summary with statistics and breakdown of all transaction categories",
-    endpoint: "summary"
-  },
-  { 
-    id: "matched_csv",
-    name: "Matched Transactions (CSV)", 
-    description: "Matched transactions in CSV format for Excel import",
-    endpoint: "matched/csv"
-  },
-  { 
-    id: "unmatched_csv",
-    name: "Unmatched Transactions (CSV)", 
-    description: "Unmatched transactions in CSV format for Excel import",
-    endpoint: "unmatched/csv"
-  },
-  { 
-    id: "ttum",
-    name: "TTUM Report (ZIP)", 
-    description: "Transaction Type Unmatched Report - all TTUM files packaged together",
-    endpoint: "ttum"
-  },
-  { 
-    id: "ttum_csv",
-    name: "TTUM Report (CSV)", 
-    description: "TTUM data in CSV format for detailed analysis",
-    endpoint: "ttum/csv"
-  },
-  { 
-    id: "ttum_xlsx",
-    name: "TTUM Report (XLSX)", 
-    description: "TTUM data in Excel format with formatting",
-    endpoint: "ttum/xlsx"
-  },
-  { 
-    id: "adjustments",
-    name: "Adjustments (CSV)", 
-    description: "CSV file containing all adjustments and force-match candidates",
-    endpoint: "adjustments"
-  },
-  { 
-    id: "report",
-    name: "Text Report (TXT)", 
-    description: "Human-readable text report with detailed reconciliation breakdown",
-    endpoint: "report"
-  },
-];
-
-const downloadFile = (response: AxiosResponse<Blob>, defaultFilename: string) => {
-  const blob = response.data;
-  const contentDisposition = response.headers['content-disposition'];
-  let filename = defaultFilename;
-
-  if (contentDisposition) {
-      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-      if (filenameMatch && filenameMatch.length > 1) {
-          filename = filenameMatch[1].replace(/['"]/g, '');
-      }
-  }
-
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  window.URL.revokeObjectURL(url);
+interface ReportCategory {
+  name: string;
+  description: string;
+  subcategories?: Record<string, { name: string; description: string; reports: ReportDefinition[] }>;
+  reports?: ReportDefinition[];
 }
+
+const REPORT_CATEGORIES: Record<string, ReportCategory> = {
+  listing: {
+    name: "Listing Reports",
+    description: "Pre-Reconciliation Listing - Raw ingestion files from 6 core data sources",
+    reports: [
+      {
+        id: "cbs_beneficiary",
+        name: "CBS Beneficiary (Raw)",
+        description: "Raw beneficiary data from Core Banking System",
+        format: "CSV",
+      },
+      {
+        id: "cbs_remitter",
+        name: "CBS Remitter (Raw)",
+        description: "Raw remitter data from Core Banking System",
+        format: "CSV",
+      },
+      {
+        id: "switch_inward",
+        name: "Switch Inward (Raw)",
+        description: "Raw inward transaction data from Switch",
+        format: "CSV",
+      },
+      {
+        id: "switch_outward",
+        name: "Switch Outward (Raw)",
+        description: "Raw outward transaction data from Switch",
+        format: "CSV",
+      },
+      {
+        id: "npci_inward",
+        name: "NPCI Inward (Raw)",
+        description: "Raw inward transaction data from NPCI",
+        format: "CSV",
+      },
+      {
+        id: "npci_outward",
+        name: "NPCI Outward (Raw)",
+        description: "Raw outward transaction data from NPCI",
+        format: "CSV",
+      },
+    ],
+  },
+  reconciliation: {
+    name: "Reconciliation Reports",
+    description: "Reconciliation reports with 3 comparison pairs plus Hanging Transactions",
+    subcategories: {
+      inward: {
+        name: "Inward Direction",
+        description: "Credit/Inward transactions reconciliation",
+        reports: [
+          {
+            id: "gl_switch_matched_inward",
+            name: "GL vs. Switch - Matched",
+            description: "Inward transactions matched between GL and Switch",
+            format: "CSV",
+          },
+          {
+            id: "gl_switch_unmatched_inward",
+            name: "GL vs. Switch - Unmatched (with Ageing)",
+            description: "Inward transactions unmatched between GL and Switch with aging",
+            format: "CSV",
+          },
+          {
+            id: "switch_network_matched_inward",
+            name: "Switch vs. Network - Matched",
+            description: "Inward transactions matched between Switch and Network",
+            format: "CSV",
+          },
+          {
+            id: "switch_network_unmatched_inward",
+            name: "Switch vs. Network - Unmatched (with Ageing)",
+            description: "Inward transactions unmatched between Switch and Network",
+            format: "CSV",
+          },
+          {
+            id: "gl_network_matched_inward",
+            name: "GL vs. Network - Matched",
+            description: "Inward transactions matched between GL and Network",
+            format: "CSV",
+          },
+          {
+            id: "gl_network_unmatched_inward",
+            name: "GL vs. Network - Unmatched (with Ageing)",
+            description: "Inward transactions unmatched between GL and Network",
+            format: "CSV",
+          },
+          {
+            id: "hanging_transactions_inward",
+            name: "Hanging Transactions",
+            description: "Inward transactions stuck in intermediate state",
+            format: "CSV",
+          },
+        ],
+      },
+      outward: {
+        name: "Outward Direction",
+        description: "Debit/Outward transactions reconciliation",
+        reports: [
+          {
+            id: "gl_switch_matched_outward",
+            name: "GL vs. Switch - Matched",
+            description: "Outward transactions matched between GL and Switch",
+            format: "CSV",
+          },
+          {
+            id: "gl_switch_unmatched_outward",
+            name: "GL vs. Switch - Unmatched (with Ageing)",
+            description: "Outward transactions unmatched between GL and Switch",
+            format: "CSV",
+          },
+          {
+            id: "switch_network_matched_outward",
+            name: "Switch vs. Network - Matched",
+            description: "Outward transactions matched between Switch and Network",
+            format: "CSV",
+          },
+          {
+            id: "switch_network_unmatched_outward",
+            name: "Switch vs. Network - Unmatched (with Ageing)",
+            description: "Outward transactions unmatched between Switch and Network",
+            format: "CSV",
+          },
+          {
+            id: "gl_network_matched_outward",
+            name: "GL vs. Network - Matched",
+            description: "Outward transactions matched between GL and Network",
+            format: "CSV",
+          },
+          {
+            id: "gl_network_unmatched_outward",
+            name: "GL vs. Network - Unmatched (with Ageing)",
+            description: "Outward transactions unmatched between GL and Network",
+            format: "CSV",
+          },
+          {
+            id: "hanging_transactions_outward",
+            name: "Hanging Transactions",
+            description: "Outward transactions stuck in intermediate state",
+            format: "CSV",
+          },
+        ],
+      },
+    },
+  },
+  ttum_annexure: {
+    name: "TTUM & Annexure",
+    description: "TTUM consolidated report and Annexure files (I-IV)",
+    subcategories: {
+      consolidated: {
+        name: "Consolidated TTUM",
+        description: "Complete TTUM report package",
+        reports: [
+          {
+            id: "ttum_consolidated",
+            name: "Consolidated TTUM Report",
+            description: "Complete TTUM with Refund, Recovery, Auto-credit, etc.",
+            format: "ZIP",
+          },
+        ],
+      },
+      annexures: {
+        name: "Annexure Files",
+        description: "Individual annexure reports",
+        reports: [
+          {
+            id: "annexure_i",
+            name: "Annexure I (Raw)",
+            description: "Raw Annexure I data for detailed review",
+            format: "CSV",
+          },
+          {
+            id: "annexure_ii",
+            name: "Annexure II (Raw)",
+            description: "Raw Annexure II data for detailed review",
+            format: "CSV",
+          },
+          {
+            id: "annexure_iii",
+            name: "Annexure III (Adjustment Report)",
+            description: "Adjustment report with reconciliation details",
+            format: "CSV",
+          },
+          {
+            id: "annexure_iv",
+            name: "Annexure IV (Bulk Upload)",
+            description: "Bulk upload format for system import",
+            format: "XLSX",
+          },
+        ],
+      },
+    },
+  },
+  rbi_regulatory: {
+    name: "RBI / Regulatory Reports",
+    description: "Regulatory compliance and RBI submission reports",
+    subcategories: {
+      settlement: {
+        name: "Settlement Reports",
+        description: "Daily settlement and clearing reports",
+        reports: [
+          {
+            id: "daily_settlement",
+            name: "Daily Settlement Report",
+            description: "Daily UPI settlement report for RBI submission",
+            format: "PDF",
+          },
+          {
+            id: "npci_clearing",
+            name: "NPCI Clearing Report",
+            description: "NPCI clearing summary with net positions",
+            format: "XLSX",
+          },
+        ],
+      },
+      aging: {
+        name: "Aging Reports",
+        description: "Transaction aging analysis",
+        reports: [
+          {
+            id: "unmatched_aging",
+            name: "Unmatched Transactions Aging",
+            description: "Age-wise breakup of unmatched transactions",
+            format: "CSV",
+          },
+        ],
+      },
+      disputes: {
+        name: "Disputes & Chargebacks",
+        description: "Dispute and chargeback tracking",
+        reports: [
+          {
+            id: "dispute_summary",
+            name: "Dispute Summary Report",
+            description: "Summary of open, working, and closed disputes",
+            format: "CSV",
+          },
+        ],
+      },
+    },
+  },
+  legacy: {
+    name: "Legacy Reports",
+    description: "Standard reconciliation reports for backward compatibility",
+    reports: [
+      {
+        id: "matched_json",
+        name: "Matched Transactions (JSON)",
+        description: "All successfully matched transactions",
+        format: "JSON",
+      },
+      {
+        id: "unmatched_json",
+        name: "Unmatched Transactions (JSON)",
+        description: "Transactions that couldn't be matched",
+        format: "JSON",
+      },
+      {
+        id: "summary_json",
+        name: "Reconciliation Summary (JSON)",
+        description: "Complete summary with statistics",
+        format: "JSON",
+      },
+      {
+        id: "matched_csv",
+        name: "Matched Transactions (CSV)",
+        description: "Matched transactions in CSV format",
+        format: "CSV",
+      },
+      {
+        id: "unmatched_csv",
+        name: "Unmatched Transactions (CSV)",
+        description: "Unmatched transactions in CSV format",
+        format: "CSV",
+      },
+    ],
+  },
+};
 
 export default function Reports() {
   const { toast } = useToast();
-  const [loadingReports, setLoadingReports] = useState<Record<string, boolean>>({});
+  const [selectedCategory, setSelectedCategory] = useState<string>("");
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string>("");
+  const [selectedReport, setSelectedReport] = useState<string>("");
+  const [dateRange, setDateRange] = useState<string>("today");
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  
+  // Create Report Type form state
+  const [newReport, setNewReport] = useState({
+    name: "",
+    category: "",
+    format: "CSV",
+    description: "",
+  });
 
-  const handleDownloadReport = async (report: ReportType) => {
+  // Get current category data
+  const currentCategory = selectedCategory ? REPORT_CATEGORIES[selectedCategory] : null;
+  const hasSubcategories = currentCategory?.subcategories !== undefined;
+  const currentSubcategory = hasSubcategories && selectedSubcategory 
+    ? currentCategory.subcategories![selectedSubcategory] 
+    : null;
+
+  // Get available reports based on selection
+  const availableReports = currentSubcategory?.reports || currentCategory?.reports || [];
+  const selectedReportData = availableReports.find((r) => r.id === selectedReport);
+
+  const handleDownload = async () => {
+    if (!selectedReportData) {
+      toast({
+        title: "Error",
+        description: "Please select a report to download",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
-      setLoadingReports(prev => ({ ...prev, [report.id]: true }));
+      setIsDownloading(true);
 
-      // Handle JSON reports separately
-      if (!report.endpoint.includes('/') && !['ttum', 'report', 'adjustments'].includes(report.id)) {
-        const data = await apiClient.getReport(report.endpoint);
-        
-        const jsonStr = JSON.stringify(data, null, 2);
-        const blob = new Blob([jsonStr], { type: 'application/json' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${report.id}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-      } else {
-        // Handle file downloads
-        let response: AxiosResponse<Blob>;
-        let defaultFilename = 'download';
+      // Call backend API to download report
+      const response: AxiosResponse<Blob> = await apiClient.downloadReport(
+        `${selectedCategory}/${selectedSubcategory || ""}/${selectedReport}`.replace(/\/+/g, "/")
+      );
 
-        if (report.id === "adjustments") {
-          response = await apiClient.downloadLatestAdjustments();
-          defaultFilename = 'adjustments.csv';
-        } else if (report.id === "report") {
-          response = await apiClient.downloadLatestReport();
-          defaultFilename = 'reconciliation_report.txt';
-        } else if (report.id === "ttum" || report.id === "ttum_consolidated") {
-          response = await apiClient.downloadReport(report.endpoint);
-          defaultFilename = 'ttum_report.zip';
-        } else if (report.id === "ttum_csv") {
-          response = await apiClient.downloadTTUMCSV();
-          defaultFilename = 'ttum_candidates.csv';
-        } else if (report.id === "ttum_xlsx") {
-          response = await apiClient.downloadTTUMXLSX();
-          defaultFilename = 'ttum_candidates.xlsx';
-        } else {
-          response = await apiClient.downloadReport(report.endpoint);
-          // Determine appropriate file extension based on report type
-          let extension = 'csv'; // Default to CSV
-          if (report.category?.includes('recon')) {
-            extension = 'csv';
-          } else if (report.endpoint.includes('annexure')) {
-            extension = 'csv';
-          } else if (report.endpoint.includes('ageing')) {
-            extension = 'csv';
-          } else if (report.endpoint.includes('hanging')) {
-            extension = 'csv';
-          } else if (report.endpoint.includes('ttum') && !report.endpoint.includes('xlsx')) {
-            extension = 'csv';
-          } else if (report.endpoint.includes('xlsx')) {
-            extension = 'xlsx';
-          } else {
-            // Fallback to parsing endpoint
-            const endpointParts = report.endpoint.split('/');
-            const lastPart = endpointParts[endpointParts.length - 1];
-            if (['raw', 'inward', 'outward', 'matched', 'unmatched'].includes(lastPart)) {
-              extension = 'csv';
-            } else {
-              extension = lastPart;
-            }
-          }
-          defaultFilename = `${report.id}.${extension}`;
+      // Create blob and download
+      const blob = response.data;
+      const contentDisposition = response.headers["content-disposition"];
+      let filename = `${selectedReport}.${selectedReportData.format.toLowerCase()}`;
+
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch.length > 1) {
+          filename = filenameMatch[1].replace(/['"]/g, "");
         }
-        
-        downloadFile(response, defaultFilename);
       }
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
 
       toast({
         title: "Success",
-        description: `${report.name} downloaded successfully`
+        description: `${selectedReportData.name} downloaded successfully`,
       });
-
     } catch (error: any) {
       toast({
         title: "Error",
         description: error.message || "Failed to download report. Please try again.",
-        variant: "destructive"
+        variant: "destructive",
       });
     } finally {
-      setLoadingReports(prev => ({ ...prev, [report.id]: false }));
+      setIsDownloading(false);
     }
   };
 
-  const ReportCard = ({ report }: { report: ReportType }) => (
-    <Card className="shadow-lg hover:shadow-xl transition-shadow">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-3 text-base">
-          <FileText className="w-5 h-5 text-brand-blue" />
-          {report.name}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground mb-4">{report.description}</p>
-        <Button 
-          className="w-full rounded-full bg-brand-blue hover:bg-brand-mid text-sm"
-          onClick={() => handleDownloadReport(report)}
-          disabled={loadingReports[report.id]}
-        >
-          {loadingReports[report.id] ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Downloading...
-            </>
-          ) : (
-            <>
-              <Download className="w-4 h-4 mr-2" />
-              Download
-            </>
-          )}
-        </Button>
-      </CardContent>
-    </Card>
-  );
+  const handleCreateReportType = () => {
+    // Demo mode - just show success toast
+    toast({
+      title: "Report Type Saved (Demo Mode)",
+      description: `Report type "${newReport.name}" has been saved for demonstration purposes.`,
+    });
+    
+    // Reset form and close dialog
+    setNewReport({ name: "", category: "", format: "CSV", description: "" });
+    setShowCreateDialog(false);
+  };
+
+  // Reset subcategory and report when category changes
+  const handleCategoryChange = (value: string) => {
+    setSelectedCategory(value);
+    setSelectedSubcategory("");
+    setSelectedReport("");
+  };
+
+  // Reset report when subcategory changes
+  const handleSubcategoryChange = (value: string) => {
+    setSelectedSubcategory(value);
+    setSelectedReport("");
+  };
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-foreground">Reports</h1>
-        <p className="text-muted-foreground">Generate and download reconciliation reports</p>
+      {/* Lean Header - Single Row */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">Reports</h1>
+          <p className="text-sm text-muted-foreground">Generate and download reconciliation reports</p>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          {/* Date Range Selector */}
+          <Select value={dateRange} onValueChange={setDateRange}>
+            <SelectTrigger className="w-[140px] h-9">
+              <Calendar className="w-4 h-4 mr-2" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="today">Today</SelectItem>
+              <SelectItem value="week">This Week</SelectItem>
+              <SelectItem value="month">This Month</SelectItem>
+              <SelectItem value="custom">Custom Range</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
-      <Tabs defaultValue="listing" className="w-full">
-        <TabsList className="bg-muted/30 grid w-full grid-cols-4">
-          <TabsTrigger value="listing" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-            Listing
-          </TabsTrigger>
-          <TabsTrigger value="recon" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-            Reconciliation
-          </TabsTrigger>
-          <TabsTrigger value="ttum" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-            TTUM & Annexure
-          </TabsTrigger>
-          <TabsTrigger value="legacy" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-            Legacy
-          </TabsTrigger>
-        </TabsList>
-
-        {/* Listing Reports Tab */}
-        <TabsContent value="listing" className="space-y-6 mt-6">
-          <Card className="bg-blue-50 border border-blue-200">
-            <CardContent className="pt-6">
-              <p className="text-sm text-blue-900">
-                <strong>Pre-Reconciliation Listing:</strong> Download raw ingestion files for the 6 core data sources: CBS Beneficiary, CBS Remitter, Switch (In/Out), and NPCI (In/Out).
-              </p>
-            </CardContent>
-          </Card>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {listingReports.map((report) => (
-              <ReportCard key={report.id} report={report} />
-            ))}
-          </div>
-        </TabsContent>
-
-        {/* Reconciliation Reports Tab */}
-        <TabsContent value="recon" className="space-y-6 mt-6">
-          <Tabs defaultValue="inward" className="w-full">
-            <TabsList className="bg-muted/20">
-              <TabsTrigger value="inward" className="data-[state=active]:bg-secondary data-[state=active]:text-secondary-foreground">
-                Inward Direction
-              </TabsTrigger>
-              <TabsTrigger value="outward" className="data-[state=active]:bg-secondary data-[state=active]:text-secondary-foreground">
-                Outward Direction
-              </TabsTrigger>
-            </TabsList>
-
-            {/* Inward Reports */}
-            <TabsContent value="inward" className="space-y-6 mt-6">
-              <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                <p className="text-sm text-green-900">
-                  <strong>Inward Transactions:</strong> Reconciliation reports for credit/inward transactions with 3 comparison pairs (GL vs Switch, Switch vs Network, GL vs Network) plus Hanging Transactions.
-                </p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {reconReportsInward.map((report) => (
-                  <ReportCard key={report.id} report={report} />
+      {/* Main Content - Dropdown-Driven Selection */}
+      <div className="border rounded-lg bg-card">
+        <div className="p-6 space-y-6">
+          {/* Step 1: Report Category */}
+          <div className="space-y-2">
+            <Label htmlFor="category" className="text-sm font-medium">
+              Report Category
+            </Label>
+            <Select value={selectedCategory} onValueChange={handleCategoryChange}>
+              <SelectTrigger id="category" className="w-full">
+                <SelectValue placeholder="Select report category" />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(REPORT_CATEGORIES).map(([key, cat]) => (
+                  <SelectItem key={key} value={key}>
+                    {cat.name}
+                  </SelectItem>
                 ))}
-              </div>
-            </TabsContent>
-
-            {/* Outward Reports */}
-            <TabsContent value="outward" className="space-y-6 mt-6">
-              <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                <p className="text-sm text-orange-900">
-                  <strong>Outward Transactions:</strong> Reconciliation reports for debit/outward transactions with 3 comparison pairs (GL vs Switch, Switch vs Network, GL vs Network) plus Hanging Transactions.
-                </p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {reconReportsOutward.map((report) => (
-                  <ReportCard key={report.id} report={report} />
-                ))}
-              </div>
-            </TabsContent>
-          </Tabs>
-        </TabsContent>
-
-        {/* TTUM & Annexure Tab */}
-        <TabsContent value="ttum" className="space-y-6 mt-6">
-          <Card className="bg-purple-50 border border-purple-200">
-            <CardContent className="pt-6">
-              <p className="text-sm text-purple-900">
-                <strong>TTUM & Annexures:</strong> Download consolidated TTUM report (Refund, Recovery, Auto-credit, etc.) and Annexure files (I-Raw, II-Raw, III-Adjustment, IV-Bulk).
-              </p>
-            </CardContent>
-          </Card>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {ttumAnnexureReports.map((report) => (
-              <ReportCard key={report.id} report={report} />
-            ))}
+              </SelectContent>
+            </Select>
+            {currentCategory && (
+              <p className="text-sm text-muted-foreground">{currentCategory.description}</p>
+            )}
           </div>
-        </TabsContent>
 
-        {/* Legacy Reports Tab */}
-        <TabsContent value="legacy" className="space-y-6 mt-6">
-          <Card className="bg-gray-50 border border-gray-200">
-            <CardContent className="pt-6">
-              <p className="text-sm text-gray-700">
-                <strong>Legacy Reports:</strong> Standard reconciliation reports for backward compatibility.
-              </p>
-            </CardContent>
-          </Card>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {reportTypes.map((report) => (
-              <ReportCard key={report.id} report={report} />
-            ))}
+          {/* Step 2: Sub-Category (Conditional) */}
+          {hasSubcategories && selectedCategory && (
+            <div className="space-y-2">
+              <Label htmlFor="subcategory" className="text-sm font-medium">
+                Sub-Category
+              </Label>
+              <Select value={selectedSubcategory} onValueChange={handleSubcategoryChange}>
+                <SelectTrigger id="subcategory" className="w-full">
+                  <SelectValue placeholder="Select sub-category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(currentCategory.subcategories!).map(([key, subcat]) => (
+                    <SelectItem key={key} value={key}>
+                      {subcat.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {currentSubcategory && (
+                <p className="text-sm text-muted-foreground">{currentSubcategory.description}</p>
+              )}
+            </div>
+          )}
+
+          {/* Step 3: Report Type */}
+          {availableReports.length > 0 && (
+            <div className="space-y-2">
+              <Label htmlFor="report" className="text-sm font-medium">
+                Report Type
+              </Label>
+              <Select value={selectedReport} onValueChange={setSelectedReport}>
+                <SelectTrigger id="report" className="w-full">
+                  <SelectValue placeholder="Select specific report" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableReports.map((report) => (
+                    <SelectItem key={report.id} value={report.id}>
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-4 h-4" />
+                        <span>{report.name}</span>
+                        <span className="text-xs text-muted-foreground">({report.format})</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedReportData && (
+                <p className="text-sm text-muted-foreground">{selectedReportData.description}</p>
+              )}
+            </div>
+          )}
+
+          {/* Download Button */}
+          <div className="flex items-center gap-3 pt-2">
+            <Button
+              onClick={handleDownload}
+              disabled={!selectedReport || isDownloading}
+              className="bg-brand-blue hover:bg-brand-mid text-white"
+            >
+              {isDownloading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Downloading...
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 mr-2" />
+                  Download Report
+                </>
+              )}
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={() => setShowCreateDialog(true)}
+              className="border-brand-blue text-brand-blue hover:bg-brand-light"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Create Report Type
+            </Button>
           </div>
-        </TabsContent>
-      </Tabs>
+        </div>
+      </div>
+
+      {/* Create Report Type Dialog */}
+      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Create New Report Type</DialogTitle>
+            <DialogDescription>
+              Define a new report type for future use. This is for demonstration purposes only.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="report-name">Report Name</Label>
+              <Input
+                id="report-name"
+                placeholder="e.g., Custom Settlement Report"
+                value={newReport.name}
+                onChange={(e) => setNewReport({ ...newReport, name: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="report-category">Category</Label>
+              <Select
+                value={newReport.category}
+                onValueChange={(value) => setNewReport({ ...newReport, category: value })}
+              >
+                <SelectTrigger id="report-category">
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(REPORT_CATEGORIES).map(([key, cat]) => (
+                    <SelectItem key={key} value={key}>
+                      {cat.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="report-format">File Format</Label>
+              <Select
+                value={newReport.format}
+                onValueChange={(value) => setNewReport({ ...newReport, format: value })}
+              >
+                <SelectTrigger id="report-format">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="CSV">CSV</SelectItem>
+                  <SelectItem value="XLSX">XLSX</SelectItem>
+                  <SelectItem value="PDF">PDF</SelectItem>
+                  <SelectItem value="ZIP">ZIP</SelectItem>
+                  <SelectItem value="JSON">JSON</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="report-description">Description</Label>
+              <Textarea
+                id="report-description"
+                placeholder="Describe the purpose and content of this report..."
+                value={newReport.description}
+                onChange={(e) => setNewReport({ ...newReport, description: e.target.value })}
+                rows={3}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCreateDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateReportType}
+              disabled={!newReport.name || !newReport.category}
+              className="bg-brand-blue hover:bg-brand-mid text-white"
+            >
+              Save Report Type
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

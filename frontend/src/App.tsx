@@ -21,6 +21,12 @@ import Audit from "./pages/Audit";
 import NotFound from "./pages/NotFound";
 import Login from "./pages/Login";
 import WelcomeDialog from "./components/WelcomeDialog";
+import AIShowcase from "./pages/AIShowcase";
+import BlockchainAudit from "./pages/BlockchainAudit";
+// import Watchlist from "./pages/Watchlist";
+import MakerChecker from "./pages/MakerChecker";
+import Disputes from "./pages/Disputes";
+import CycleSkip from "./pages/CycleSkip";
 
 const queryClient = new QueryClient();
 
@@ -56,6 +62,12 @@ const AppRoutes = () => {
       <Route path="/enquiry" element={<ProtectedRoute><Layout><Enquiry /></Layout></ProtectedRoute>} />
       <Route path="/reports" element={<ProtectedRoute><Layout><Reports /></Layout></ProtectedRoute>} />
       <Route path="/audit" element={<ProtectedRoute><Layout><Audit /></Layout></ProtectedRoute>} />
+      <Route path="/ai-showcase" element={<ProtectedRoute><Layout><AIShowcase /></Layout></ProtectedRoute>} />
+      <Route path="/blockchain" element={<ProtectedRoute><Layout><BlockchainAudit /></Layout></ProtectedRoute>} />
+      {/* <Route path="/watchlist" element={<ProtectedRoute><Layout><Watchlist /></Layout></ProtectedRoute>} /> */}
+      <Route path="/maker-checker" element={<ProtectedRoute><Layout><MakerChecker /></Layout></ProtectedRoute>} />
+      <Route path="/disputes" element={<ProtectedRoute><Layout><Disputes /></Layout></ProtectedRoute>} />
+      <Route path="/cycle-skip" element={<ProtectedRoute><Layout><CycleSkip /></Layout></ProtectedRoute>} />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );

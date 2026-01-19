@@ -16,7 +16,14 @@ import {
   FileText,
   PanelLeftClose,
   PanelLeft,
-  LogOut
+  LogOut,
+  Sparkles,
+  Shield,
+  EyeOff,
+  UserCheck,
+  MessageSquare,
+  Scale,
+  RefreshCcw
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -37,8 +44,14 @@ const menuItems = [
   { path: "/force-match", label: "Force - Match", icon: GitMerge },
   { path: "/auto-match", label: "Auto-Match", icon: PlayCircle },
   { path: "/rollback", label: "Roll-Back", icon: RotateCcw },
-  { path: "/enquiry", label: "Enquiry", icon: HelpCircle },
+  // { path: "/watchlist", label: "Watchlist", icon: EyeOff },
+  { path: "/maker-checker", label: "User Management", icon: UserCheck },
+  { path: "/disputes", label: "Dispute Management", icon: Scale },
+  { path: "/cycle-skip", label: "NPCI Cycle Skip", icon: RefreshCcw },
+  { path: "/enquiry", label: "Ask Verif.AI", icon: MessageSquare },
   { path: "/reports", label: "Reports", icon: FileText },
+  { path: "/ai-showcase", label: "AI Showcase", icon: Sparkles },
+  { path: "/blockchain", label: "Blockchain Audit", icon: Shield },
 ];
 
 export default function Layout({ children }: LayoutProps) {
@@ -80,7 +93,7 @@ export default function Layout({ children }: LayoutProps) {
         <div className="p-3 flex-1 flex flex-col">
           {/* Logo Section */}
           <div className={cn(
-            "mb-4 pb-4 border-b border-sidebar-border flex justify-center",
+            "mb-2 pb-3 border-b border-sidebar-border flex justify-center",
             isCollapsed ? "px-2" : "px-4"
           )}>
             <img 
@@ -88,7 +101,7 @@ export default function Layout({ children }: LayoutProps) {
               alt="NStechX" 
               className={cn(
                 "object-contain rounded",
-                isCollapsed ? "h-16 w-16" : "h-24 w-24"
+                isCollapsed ? "h-14 w-14" : "h-20 w-20"
               )}
             />
           </div>
@@ -187,18 +200,16 @@ export default function Layout({ children }: LayoutProps) {
       {/* Main Content */}
       <main className="flex-1 overflow-auto flex flex-col">
         {/* Top Bar with Date Filter and verif.ai Logo */}
-        <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-          <div className="flex-1 max-w-md">
-            <DateFilter
-              onDateChange={setDateRange}
-              showRefresh={false}
-              className="shadow-none border-none bg-transparent"
-            />
-          </div>
+        <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+          <DateFilter
+            onDateChange={setDateRange}
+            showRefresh={false}
+            className=""
+          />
           <img
             src={verifAiLogo}
             alt="verif.ai"
-            className="h-40 object-contain"
+            className="h-20 object-contain"
           />
         </div>
         <div className="flex-1 overflow-auto">

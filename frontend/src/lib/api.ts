@@ -69,7 +69,7 @@ export interface ReconciliationResponse {
   unmatched_count: number;
   exception_count: number;
   partial_match_count: number;
-  orphan_count: number;
+  hanging_count: number;
 }
 
 export interface SummaryResponse {

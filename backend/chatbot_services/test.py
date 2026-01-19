@@ -34,7 +34,7 @@ def test_valid_rrn_found():
     """Test with valid RRN that exists"""
     response = requests.get(
         f"{BASE_URL}/api/v1/chatbot",
-        params={"rrn": "123456789012"}
+        params={"rrn": "636397811101708"}
     )
     print_response("Valid RRN (Found)", response)
 

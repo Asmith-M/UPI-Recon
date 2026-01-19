@@ -69,7 +69,7 @@ def handle_query(text: str):
     confidence = info.get("confidence")
     print(f"Detected intent: {intent} (confidence={confidence:.2f})")
     print("No transaction identifier (RRN/TXN) found in your message.")
-    print("Try: 'rrn 123456789012' or 'txn 001' or use command 'help' for options")
+    print("Try: 'rrn 636397811101708' or 'txn 001' or use command 'help' for options")
 
 
 def main():
@@ -98,7 +98,7 @@ def main():
                 print("  help   - Show this help")
                 print("  exit   - Quit the CLI")
                 print("Examples:")
-                print("  check rrn 123456789012")
+                print("  check rrn 636397811101708")
                 print("  txn 001")
                 continue
             if cmd == "stats":

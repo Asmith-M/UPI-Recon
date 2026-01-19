@@ -7,6 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { Loader2, RotateCcw, AlertTriangle, CheckCircle2, RefreshCw, Zap, FolderOpen, BarChart3, Repeat } from "lucide-react";
 import { useToast } from "../hooks/use-toast";
 import { apiClient } from "../lib/api";
+import { generateDemoHistorical, generateDemoSummary } from "../lib/demoData";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -100,109 +101,69 @@ export default function Rollback() {
   }, [selectedRun]);
 
   const fetchRunHistory = async () => {
-    try {
-      setLoading(true);
+    // DEMO MODE: Use demo data directly
+    setLoading(true);
+    
+    const historical = generateDemoHistorical();
+    const summary = generateDemoSummary();
+    const runMap = new Map<string, RunHistory>();
 
-      const historical = await apiClient.getHistoricalSummary();
-
-      // Create a map to ensure unique run_ids
-      const runMap = new Map<string, RunHistory>();
-
-      // Process historical data
-      historical.forEach((item: any) => {
-        const runId = `RUN_${item.month.replace('-', '')}`;
-        if (!runMap.has(runId)) {
-          runMap.set(runId, {
-            run_id: runId,
-            date: `2024-${item.month}`,
-            time: '12:00:00',
-            total_transactions: item.allTxns || 0,
-            matched: item.reconciled || 0,
-            unmatched: (item.allTxns || 0) - (item.reconciled || 0),
-            status: 'completed'
-          });
-        }
-      });
-
-      // Try to get latest run details
-      try {
-        const summary = await apiClient.getSummary();
-        if (summary.run_id && !runMap.has(summary.run_id)) {
-          const runIdParts = summary.run_id.split('_');
-          if (runIdParts.length >= 3) {
-            const dateStr = runIdParts[1];
-            const timeStr = runIdParts[2];
-
-            const latestRun: RunHistory = {
-              run_id: summary.run_id,
-              date: `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}`,
-              time: `${timeStr.substring(0, 2)}:${timeStr.substring(2, 4)}:${timeStr.substring(4, 6)}`,
-              total_transactions: summary.totals?.count ?? summary.total_transactions ?? 0,
-              matched: summary.matched?.count ?? summary.matched ?? 0,
-              unmatched: summary.unmatched?.count ?? summary.unmatched ?? 0,
-              status: summary.status
-            };
-
-            runMap.set(summary.run_id, latestRun);
-          }
-        }
-      } catch (error) {
-        console.log("Could not fetch latest run details");
+    // Process historical data
+    historical.forEach((item: any) => {
+      const runId = `RUN_${item.month.replace('-', '')}`;
+      if (!runMap.has(runId)) {
+        runMap.set(runId, {
+          run_id: runId,
+          date: `${item.month}`,
+          time: '12:00:00',
+          total_transactions: item.allTxns || 0,
+          matched: item.reconciled || 0,
+          unmatched: (item.allTxns || 0) - (item.reconciled || 0),
+          status: 'completed'
+        });
       }
+    });
 
-      // Convert map to array and sort by date descending
-      const history = Array.from(runMap.values()).sort((a, b) =>
-        new Date(b.date + ' ' + b.time).getTime() - new Date(a.date + ' ' + a.time).getTime()
-      );
-
-      setRunHistory(history);
-    } catch (error: any) {
-      console.error("Error fetching run history:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load run history. Please try again.",
-        variant: "destructive"
-      });
-      setRunHistory([]);
-    } finally {
-      setLoading(false);
+    // Add latest run
+    if (summary.run_id && !runMap.has(summary.run_id)) {
+      const latestRun: RunHistory = {
+        run_id: summary.run_id,
+        date: new Date().toISOString().split('T')[0],
+        time: new Date().toTimeString().split(' ')[0],
+        total_transactions: summary.totals?.count ?? 0,
+        matched: summary.matched?.count ?? 0,
+        unmatched: summary.unmatched?.count ?? 0,
+        status: summary.status
+      };
+      runMap.set(summary.run_id, latestRun);
     }
+
+    const history = Array.from(runMap.values()).sort((a, b) =>
+      new Date(b.date + ' ' + b.time).getTime() - new Date(a.date + ' ' + a.time).getTime()
+    );
+
+    setRunHistory(history);
+    setLoading(false);
   };
 
   const fetchRollbackHistory = async () => {
-    try {
-      setRollbackHistoryLoading(true);
-      const data = await apiClient.getRollbackHistory();
-      setRollbackHistory(data.history || []);
-    } catch (error) {
-      console.error("Error fetching rollback history:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load rollback history. Please try again.",
-        variant: "destructive"
-      });
-      setRollbackHistory([]);
-    } finally {
-      setRollbackHistoryLoading(false);
-    }
+    // DEMO MODE: Empty rollback history
+    setRollbackHistoryLoading(true);
+    setRollbackHistory([]);
+    setRollbackHistoryLoading(false);
   };
 
   const fetchAvailableCycles = async (runId: string) => {
-    try {
-      setCyclesLoading(true);
-      const data = await apiClient.getAvailableCycles(runId);
-      setAvailableCycles(data);
-    } catch (error) {
-      console.error("Error fetching available cycles:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load available cycles. Please try again.",
-        variant: "destructive"
-      });
-      setAvailableCycles(null);
-    } finally {
-      setCyclesLoading(false);
-    }
+    // DEMO MODE: Mock cycles
+    setCyclesLoading(true);
+    setAvailableCycles({
+      status: 'success',
+      run_id: runId,
+      available_cycles: ['C1', 'C2', 'C3'],
+      total_available: 3,
+      all_cycles: ['C1', 'C2', 'C3']
+    });
+    setCyclesLoading(false);
   };
 
   const handleRollback = async () => {
@@ -279,16 +240,10 @@ export default function Rollback() {
   };
 
   const fetchAuditTrail = async (runId: string) => {
-    try {
-      setAuditLoading(true);
-      const data = await apiClient.getAuditTrail(runId);
-      setAuditTrail(data.audit_trail || []);
-    } catch (error) {
-      console.error("Error fetching audit trail:", error);
-      setAuditTrail([]);
-    } finally {
-      setAuditLoading(false);
-    }
+    // DEMO MODE: Empty audit trail
+    setAuditLoading(true);
+    setAuditTrail([]);
+    setAuditLoading(false);
   };
 
   // Fetch audit trail when selectedRun changes
@@ -738,14 +693,14 @@ export default function Rollback() {
                 <p className="text-sm text-muted-foreground">
                   Are you sure you want to perform a <strong>{rollbackLevel.replace('_', ' ')}</strong> rollback on <strong>{selectedRun}</strong>?
                 </p>
-                {rollbackLevel === "whole_process" && (
+                {rollbackLevel === "complete" && (
                   <div className="bg-red-50 border border-red-200 rounded-lg p-3">
                     <p className="text-sm text-red-800">
                       <strong>WARNING:</strong> This will completely reset the entire reconciliation process for this run, including all matched transactions, vouchers, and processed data.
                     </p>
                   </div>
                 )}
-                {rollbackLevel === "cycle_wise" && (
+                {rollbackLevel === "file" && (
                   <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
                     <p className="text-sm text-purple-800">
                       Cycle <strong>{cycleId}</strong> transactions will be restored to unmatched state for reprocessing.

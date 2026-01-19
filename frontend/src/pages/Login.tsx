@@ -37,7 +37,7 @@ const Login = () => {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#003d33] to-[#00251e]">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
           <p className="text-foreground">Loading...</p>
@@ -47,7 +47,7 @@ const Login = () => {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#003d33] to-[#00251e] p-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
       <div className="w-full max-w-md">
         <div className="bg-white rounded-2xl shadow-xl p-10 border border-gray-100">
           {/* verif.ai Logo - Top Center */}
@@ -61,7 +61,7 @@ const Login = () => {
 
           {/* Heading */}
           <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-gray-900 mb-2">Login to UPI Recon</h1>
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">Login to Verif.AI</h1>
             <p className="text-gray-600 text-sm">Enter your credentials to access the system</p>
           </div>
 
@@ -122,7 +122,7 @@ const Login = () => {
               <img 
                 src={nstechxLogo} 
                 alt="NStechX" 
-                className="h-32 object-contain"
+              className="h-20 object-contain"
               />
             </div>
           </div>

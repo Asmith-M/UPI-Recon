@@ -9,13 +9,14 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Textarea } from "@/components/ui/textarea";
 import { apiClient } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { generateDemoUnmatchedTransactions } from "@/lib/demoData";
 
 
 
 
 
 // Constants
-const TRANSACTION_STATUSES = ['PARTIAL_MATCH', 'ORPHAN', 'MISMATCH', 'PARTIAL_MISMATCH'] as const;
+const TRANSACTION_STATUSES = ['PARTIAL_MATCH', 'HANGING', 'MISMATCH', 'PARTIAL_MISMATCH'] as const;
 type TransactionStatus = typeof TRANSACTION_STATUSES[number];
 
 const COMPARABLE_COLUMNS = ['amount', 'date', 'reference'] as const;
@@ -177,7 +178,7 @@ const transformRawDataToTransactions = (rawData: any): Transaction[] => {
 
     return {
       rrn,
-      status: record.status || 'ORPHAN',
+      status: record.status || 'HANGING',
       cbs,
       switch: switchTxn,
       npci,
@@ -192,7 +193,7 @@ const transformRawDataToTransactions = (rawData: any): Transaction[] => {
 
 const getSuggestedAction = (record: any): string => {
   const status = record.status;
-  if (status === 'ORPHAN') {
+  if (status === 'HANGING') {
     const missing = [];
     if (!record.cbs) missing.push('CBS');
     if (!record.switch) missing.push('Switch');
@@ -242,26 +243,11 @@ export default function ForceMatch() {
   }, [panelLHS, panelRHS, panelLHSColumn, panelRHSColumn, selectedTransaction]);
 
   const fetchUnmatchedTransactions = async () => {
-    try {
-      dispatch({ type: 'FETCH_START' });
-      const rawData = await apiClient.getRawData();
-      console.log("Raw data:", rawData);
-      const transformed = transformRawDataToTransactions(rawData);
-      console.log("Transformed transactions:", transformed);
-      const unmatchedTransactions = transformed.filter(t =>
-        TRANSACTION_STATUSES.includes(t.status as TransactionStatus)
-      );
-      console.log("Filtered unmatched:", unmatchedTransactions);
-      dispatch({ type: 'FETCH_SUCCESS', payload: unmatchedTransactions });
-    } catch (error: any) {
-      console.error("Error fetching transactions:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load transactions. Please try again.",
-        variant: "destructive"
-      });
-      dispatch({ type: 'FETCH_ERROR' });
-    }
+    // DEMO MODE: Use demo data directly
+    dispatch({ type: 'FETCH_START' });
+    const demoData = generateDemoUnmatchedTransactions();
+    console.log("Demo data loaded:", demoData.length);
+    dispatch({ type: 'FETCH_SUCCESS', payload: demoData });
   };
 
   const validateZeroDifference = (transaction: Transaction) => {
@@ -341,7 +327,7 @@ export default function ForceMatch() {
     const variants: Record<string, string> = {
       'MATCHED': 'bg-green-500 text-white',
       'PARTIAL_MATCH': 'bg-yellow-500 text-white',
-      'ORPHAN': 'bg-orange-500 text-white',
+      'HANGING': 'bg-orange-500 text-white',
       'MISMATCH': 'bg-red-500 text-white',
       'PARTIAL_MISMATCH': 'bg-red-400 text-white',
       'FORCE_MATCHED': 'bg-blue-500 text-white'
@@ -367,10 +353,10 @@ export default function ForceMatch() {
   const summaryCounts = useMemo(() => {
     return transactions.reduce((acc, t) => {
       if (t.status === 'PARTIAL_MATCH') acc.partialMatch++;
-      if (t.status === 'ORPHAN') acc.orphan++;
+      if (t.status === 'HANGING') acc.hanging++;
       if (t.status.includes('MISMATCH')) acc.mismatch++;
       return acc;
-    }, { partialMatch: 0, orphan: 0, mismatch: 0 });
+    }, { partialMatch: 0, hanging: 0, mismatch: 0 });
   }, [transactions]);
 
   return (
@@ -514,8 +500,8 @@ export default function ForceMatch() {
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <div className="text-2xl font-bold text-orange-600">{summaryCounts.orphan}</div>
-            <div className="text-sm text-gray-600">Orphan</div>
+            <div className="text-2xl font-bold text-orange-600">{summaryCounts.hanging}</div>
+            <div className="text-sm text-gray-600">Hanging</div>
           </CardContent>
         </Card>
         <Card>

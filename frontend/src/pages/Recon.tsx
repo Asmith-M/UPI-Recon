@@ -6,14 +6,12 @@ import {
   CardTitle,
 } from "../components/ui/card";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { ScrollArea } from "../components/ui/scroll-area";
 import { Loader2, CheckCircle2, Clock } from "lucide-react";
-import { apiClient } from "../lib/api";
 import { useToast } from "../hooks/use-toast";
 import CycleSelector from "../components/CycleSelector";
 import DirectionSelector from "../components/DirectionSelector";
+import { generateDemoSummary } from "../lib/demoData";
 
 export default function Recon() {
   const { toast } = useToast();
@@ -25,52 +23,36 @@ export default function Recon() {
   const [selectedDirection, setSelectedDirection] = useState("inward");
 
   useEffect(() => {
-    fetchReconData();
+    // DEMO MODE: Use demo data directly
+    setLoading(true);
+    const demoSummary = generateDemoSummary();
+    setSummary(demoSummary);
+    setReport(`Reconciliation Report
+Run ID: ${demoSummary.run_id}
+Status: ${demoSummary.status}
+Generated: ${demoSummary.generated_at}
+
+=== Summary ===
+Total Transactions: ${demoSummary.totals.count.toLocaleString()}
+Matched: ${demoSummary.matched.count.toLocaleString()} (${Math.round((demoSummary.matched.count / demoSummary.totals.count) * 100)}%)
+Partial Matches: ${demoSummary.partial_matches.count.toLocaleString()} (${Math.round((demoSummary.partial_matches.count / demoSummary.totals.count) * 100)}%)
+Hanging: ${demoSummary.hanging.count.toLocaleString()} (${Math.round((demoSummary.hanging.count / demoSummary.totals.count) * 100)}%)
+Unmatched: ${demoSummary.unmatched.count.toLocaleString()} (${Math.round((demoSummary.unmatched.count / demoSummary.totals.count) * 100)}%)
+
+This is a demo reconciliation run with simulated data.`);
+    setLoading(false);
   }, []);
-
-  const fetchReconData = async () => {
-    try {
-      setLoading(true);
-      // Fetch summary
-      const summaryData = await apiClient.getSummary();
-      setSummary(summaryData);
-
-      // Fetch report
-      const reportText = await apiClient.downloadLatestReport();
-      const text = await reportText.text();
-      setReport(text);
-    } catch (error: any) {
-      console.log("No reconciliation data yet");
-      setReport(
-        "No reconciliation data available yet. Run reconciliation to see results."
-      );
-      setSummary({
-        run_id: null,
-        generated_at: "",
-        totals: { count: 0, amount: 0 },
-        matched: { count: 0, amount: 0 },
-        unmatched: { count: 0, amount: 0 },
-        hanging: { count: 0, amount: 0 },
-        exceptions: { count: 0, amount: 0 },
-        status: "no_reconciliation_run",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleRunRecon = async () => {
     try {
       setReconciliating(true);
-      const result = await apiClient.runReconciliation(undefined, selectedDirection);
-
+      // Simulate processing time
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      
       toast({
-        title: "Reconciliation completed",
-        description: `Processed ${result.matched_count} matched transactions`,
+        title: "Reconciliation completed (Demo)",
+        description: `Processed reconciliation successfully`,
       });
-
-      // Refresh data
-      await fetchReconData();
     } catch (error: any) {
       toast({
         title: "Reconciliation failed",
@@ -82,71 +64,6 @@ export default function Recon() {
     }
   };
 
-  const handleDownloadReport = async () => {
-    try {
-      const reportBlob = await apiClient.downloadLatestReport();
-      const url = window.URL.createObjectURL(reportBlob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'reconciliation_report.txt';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      
-      toast({
-        title: "Report downloaded",
-        description: "reconciliation_report.txt"
-      });
-    } catch (error: any) {
-      toast({
-        title: "Download failed",
-        description: error.message || "Could not download report",
-        variant: "destructive"
-      });
-    }
-  };
-
-  const handleDownloadAdjustments = async () => {
-    try {
-      const adjustmentsBlob = await apiClient.downloadLatestAdjustments();
-      const url = window.URL.createObjectURL(adjustmentsBlob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'adjustments.csv';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      
-      toast({
-        title: "Adjustments downloaded",
-        description: "adjustments.csv"
-      });
-    } catch (error: any) {
-      toast({
-        title: "Download failed",
-        description: error.message || "Could not download adjustments",
-        variant: "destructive"
-      });
-    }
-  };
-
-  const handleRefreshReport = async () => {
-    try {
-      await fetchReconData();
-      toast({
-        title: "Report refreshed",
-        description: "Latest report loaded"
-      });
-    } catch (error: any) {
-      toast({
-        title: "Refresh failed",
-        description: error.message || "Could not refresh report",
-        variant: "destructive"
-      });
-    }
-  };
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -159,7 +76,7 @@ export default function Recon() {
       <div className="grid grid-cols-1 gap-6">
         {/* Status Banner */}
         {summary && summary.run_id && (
-          <Card className="shadow-lg bg-gradient-to-r from-blue-50 to-card border-blue-200">
+          <Card className="shadow-sm bg-gradient-to-r from-blue-50 to-card border-blue-200">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
@@ -169,11 +86,11 @@ export default function Recon() {
                   <p className="text-sm text-muted-foreground">
                     Run ID: {summary.run_id}
                   </p>
-                  <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
                     <span>Status:</span>
                     {reconciliating ? (
-                      <span className="flex items-center gap-1">
-                        <Clock className="h-4 w-4 animate-pulse" /> Running...
+                      <span className="flex items-center gap-1 text-blue-600">
+                        <Clock className="h-4 w-4 animate-spin" /> Running...
                       </span>
                     ) : summary.status === "completed" ? (
                       <span className="flex items-center gap-1 text-green-600">
@@ -186,7 +103,7 @@ export default function Recon() {
                 </div>
                 <div className="text-right">
                   <div className="text-3xl font-bold text-green-600">
-                    {summary.matched?.count ?? summary.matched ?? 0}
+                    {(summary.matched?.count ?? summary.matched ?? 0).toLocaleString()}
                   </div>
                   <div className="text-sm text-muted-foreground">
                     Transactions Matched
@@ -198,38 +115,42 @@ export default function Recon() {
         )}
 
         {/* Run Reconciliation Section */}
-        <Card className="shadow-lg">
+        <Card className="shadow-sm">
           <CardHeader>
-            <CardTitle>Run Reconciliation</CardTitle>
+            <CardTitle className="text-xl">Run Reconciliation</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <Label>Cycle</Label>
+                <Label className="text-sm font-medium">Cycle</Label>
                 <CycleSelector value={selectedCycle} onValueChange={setSelectedCycle} />
               </div>
               <div className="space-y-2">
-                <Label>Direction</Label>
+                <Label className="text-sm font-medium">Direction</Label>
                 <DirectionSelector value={selectedDirection} onValueChange={setSelectedDirection} />
               </div>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Select cycle and direction, then click the button below to run reconciliation
-            </p>
-            <Button
-              className="w-full rounded-full py-6 bg-brand-blue hover:bg-brand-mid shadow-lg"
-              onClick={handleRunRecon}
-              disabled={reconciliating}
-            >
-              {reconciliating ? (
-                <>
-                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  Running Reconciliation...
-                </>
-              ) : (
-                "Run Recon"
-              )}
-            </Button>
+            
+            <div className="flex items-center justify-between pt-4 border-t">
+              <p className="text-xs text-muted-foreground max-w-[60%]">
+                Configure the cycle and direction parameters above to initiate a new reconciliation process.
+              </p>
+              <Button
+                size="sm"
+                className="bg-brand-blue hover:bg-brand-mid px-6"
+                onClick={handleRunRecon}
+                disabled={reconciliating}
+              >
+                {reconciliating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  "Run Recon"
+                )}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>

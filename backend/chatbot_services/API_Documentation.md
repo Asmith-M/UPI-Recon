@@ -13,7 +13,7 @@ No authentication required (prototype).
 
 ## Endpoints
 
-### 1. Root Endpoint
+### 1. Root Endpoint 
 **GET** `/`
 
 Returns API information and available endpoints.
@@ -26,7 +26,7 @@ Returns API information and available endpoints.
   "status": "running",
   "data_loaded": true,
   "endpoints": {
-    "chatbot": "/api/v1/chatbot?rrn=123456789012",
+    "chatbot": "/api/v1/chatbot?rrn=636397811101708",
     "health": "/health",
     "stats": "/api/v1/stats",
     "reload": "/api/v1/reload (POST)",
@@ -61,7 +61,7 @@ Main endpoint for transaction lookups.
 **Query Parameters:**
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `rrn` | string | Optional* | 12-digit Retrieval Reference Number |
+| `rrn` | string | Optional* | 12+ digit Retrieval Reference Number |
 | `txn_id` | string | Optional* | Transaction ID (e.g., TXN001) |
 
 *Note: At least one parameter must be provided.
@@ -101,10 +101,10 @@ Main endpoint for transaction lookups.
 ```json
 {
   "error": "Validation error",
-  "message": "Invalid RRN format. RRN must be exactly 12 digits",
+  "message": "Invalid RRN format. RRN must be at least 12 digits",
   "details": {
     "provided": "12345",
-    "expected_format": "12 digits (e.g., 123456789012)",
+    "expected_format": "12 or more digits (e.g., 636397811101708)",
     "length": 5
   }
 }

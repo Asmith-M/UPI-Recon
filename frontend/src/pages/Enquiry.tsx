@@ -10,24 +10,39 @@ import { apiClient } from "../lib/api";
 interface Message {
   id: number;
   role: "user" | "bot";
-  // content can be plain text or a React node for rich bot responses
   content: string | ReactNode;
   timestamp: Date;
 }
+
+const FAQS = [
+  { question: "How do I reconcile a transaction?", answer: "Upload your CBS, Switch, and NPCI files through the File Upload page. The system will automatically match transactions across all three systems and generate reconciliation reports." },
+  { question: "What is a hanging transaction?", answer: "A hanging transaction is one that appears in one system but not in others. For example, if a transaction is in CBS but missing in Switch or NPCI, it's considered hanging." },
+  { question: "How to resolve amount mismatch?", answer: "For amount mismatches, use the Force-Match tool to review the discrepancy. You can manually verify and match transactions if the difference is within acceptable tolerance." },
+  { question: "What are partial matches?", answer: "Partial matches occur when transactions exist in multiple systems but have minor discrepancies like amount or date differences. These can often be resolved through Force-Match." },
+  { question: "How to download TTUM reports?", answer: "Go to the Reports page, select 'TTUM & Annexure' category, choose your desired report format (CSV/XLSX), and click Download." },
+  { question: "What is the difference between matched and unmatched?", answer: "Matched transactions have identical records across CBS, Switch, and NPCI. Unmatched transactions have discrepancies or are missing from one or more systems." }
+];
+
+const EXAMPLE_QUERIES = [
+  "Show status of RRN 636397811101708",
+  "How do I reconcile a transaction?",
+  "What is a hanging transaction?",
+  "How to resolve amount mismatch?"
+];
 
 export default function Enquiry() {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 1,
       role: "bot",
-      content: "Hello! I'm your UPI Reconciliation Assistant. Enter an RRN (12 digits) or Transaction ID to get transaction details.",
+      content: "Hello! I'm Verif.AI, your intelligent UPI Reconciliation Assistant. I can help you with transaction queries, dispute guidance, and system FAQs. Ask me anything!",
       timestamp: new Date(),
     },
   ]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [showSuggestion, setShowSuggestion] = useState(true);
-  const [instrOpen, setInstrOpen] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState("English");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,6 +50,21 @@ export default function Enquiry() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const handleFAQClick = (faq: typeof FAQS[0]) => {
+    const userMsg: Message = { id: messages.length + 1, role: "user", content: faq.question, timestamp: new Date() };
+    setMessages((prev) => [...prev, userMsg]);
+    setIsTyping(true);
+    setTimeout(() => {
+      const botMsg: Message = { id: messages.length + 2, role: "bot", content: faq.answer, timestamp: new Date() };
+      setMessages((prev) => [...prev, botMsg]);
+      setIsTyping(false);
+    }, 500);
+  };
+
+  const handleExampleClick = (example: string) => {
+    setInput(example);
+  };
 
   const formatTransactionDetails = (details: any, rrn: string, status: string) => {
     // Build a JSX element with structured sections so the UI renders nicely
@@ -61,7 +91,7 @@ export default function Enquiry() {
                         'FULL_MATCH': 'bg-green-500 text-white px-2 py-0.5 rounded-full text-xs',
                         'PARTIAL': 'bg-yellow-400 text-black px-2 py-0.5 rounded-full text-xs',
                         'PARTIAL_MATCH': 'bg-yellow-400 text-black px-2 py-0.5 rounded-full text-xs',
-                        'ORPHAN': 'bg-orange-400 text-black px-2 py-0.5 rounded-full text-xs',
+                        'HANGING': 'bg-orange-400 text-black px-2 py-0.5 rounded-full text-xs',
                         'MISMATCH': 'bg-red-500 text-white px-2 py-0.5 rounded-full text-xs'
                       };
                       const cls = classMap[s] || 'bg-gray-300 text-black px-2 py-0.5 rounded-full text-xs';
@@ -219,23 +249,134 @@ export default function Enquiry() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-foreground">Transaction Enquiry</h1>
-            <p className="text-muted-foreground">Search for transaction details by RRN or Transaction ID</p>
-          </div>
-          <div className="pt-1">
-            <Button onClick={() => setInstrOpen(!instrOpen)} className="px-3">
-              Instructions
-            </Button>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Ask Verif.AI</h1>
+          <p className="text-muted-foreground">
+            Intelligent chatbot for transaction queries, dispute guidance, and system FAQs
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Language:</span>
+          <div className="flex gap-1">
+            {["English", "हिंदी", "தமிழ்", "తెలుగు"].map((lang) => (
+              <Button
+                key={lang}
+                variant={selectedLanguage === lang ? "default" : "outline"}
+                size="sm"
+                onClick={() => setSelectedLanguage(lang)}
+                className={selectedLanguage === lang ? "bg-brand-blue text-white" : ""}
+              >
+                {lang}
+              </Button>
+            ))}
           </div>
         </div>
       </div>
 
-      <div className={`grid grid-cols-1 ${instrOpen ? 'lg:grid-cols-3' : 'lg:grid-cols-1'} gap-6 transition-all duration-300`}>
+      {/* Features Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="pt-6">
+            <div className="flex flex-col items-center text-center space-y-2">
+              <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
+                <Search className="w-6 h-6 text-brand-blue" />
+              </div>
+              <h3 className="font-semibold text-sm">FAQ Support</h3>
+              <p className="text-xs text-muted-foreground">
+                Instant answers to frequently asked questions
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+        
+        <Card className="border-green-200 bg-green-50">
+          <CardContent className="pt-6">
+            <div className="flex flex-col items-center text-center space-y-2">
+              <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center">
+                <span className="text-2xl">✓</span>
+              </div>
+              <h3 className="font-semibold text-sm">Enquiry</h3>
+              <p className="text-xs text-muted-foreground">
+                Step-by-step guidnce for resolving enquiries
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+        
+        <Card className="border-purple-200 bg-purple-50">
+          <CardContent className="pt-6">
+            <div className="flex flex-col items-center text-center space-y-2">
+              <div className="w-12 h-12 rounded-full bg-purple-100 flex items-center justify-center">
+                <span className="text-2xl">⚡</span>
+              </div>
+              <h3 className="font-semibold text-sm">Status Queries</h3>
+              <p className="text-xs text-muted-foreground">
+                Real-time transaction status
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+        
+        <Card className="border-orange-200 bg-orange-50">
+          <CardContent className="pt-6">
+            <div className="flex flex-col items-center text-center space-y-2">
+              <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center">
+                <span className="text-2xl">🌐</span>
+              </div>
+              <h3 className="font-semibold text-sm">Multilingual</h3>
+              <p className="text-xs text-muted-foreground">
+                Support for multiple Indian languages
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* FAQs and Example Queries */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* FAQs Section */}
+        <Card>
+          <CardContent className="pt-6">
+            <h3 className="font-semibold text-lg mb-4">Frequently Asked Questions</h3>
+            <div className="space-y-2">
+              {FAQS.map((faq, idx) => (
+                <Button
+                  key={idx}
+                  variant="outline"
+                  className="w-full justify-start text-left h-auto py-3 px-4 hover:bg-brand-light"
+                  onClick={() => handleFAQClick(faq)}
+                >
+                  <span className="text-sm">{faq.question}</span>
+                </Button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Example Queries */}
+        <Card>
+          <CardContent className="pt-6">
+            <h3 className="font-semibold text-lg mb-4">Example Queries</h3>
+            <div className="space-y-2">
+              {EXAMPLE_QUERIES.map((example, idx) => (
+                <Button
+                  key={idx}
+                  variant="outline"
+                  className="w-full justify-start text-left h-auto py-3 px-4 hover:bg-brand-light"
+                  onClick={() => handleExampleClick(example)}
+                >
+                  <span className="text-sm">"{example}"</span>
+                </Button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6">
         {/* Chat Area */}
-        <Card className="lg:col-span-2 shadow-lg">
+        <Card className="shadow-lg">
           <CardContent className="p-0">
             <ScrollArea className="h-[600px] p-6" ref={scrollRef}>
               <div className="space-y-4">
@@ -317,7 +458,8 @@ export default function Enquiry() {
           </CardContent>
         </Card>
 
-        {instrOpen && (
+        {/* Instructions removed - using FAQs instead */}
+        {false && (
           <Card className="shadow-lg">
             <CardContent className="pt-6 space-y-6">
               <div>
@@ -344,7 +486,7 @@ export default function Enquiry() {
                     <span className="text-xs text-muted-foreground">2 systems match</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge className="bg-orange-500">ORPHAN</Badge>
+                    <Badge className="bg-orange-500">HANGING</Badge>
                     <span className="text-xs text-muted-foreground">Only 1 system</span>
                   </div>
                   <div className="flex items-center gap-2">

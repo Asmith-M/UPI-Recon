@@ -9,14 +9,10 @@ import { Upload, Loader2, CheckCircle } from "lucide-react";
 import { useToast } from "../hooks/use-toast";
 import { useMutation } from "@tanstack/react-query";
 import { apiClient } from "../lib/api";
-import CycleSelector from "../components/CycleSelector";
-import DirectionSelector from "../components/DirectionSelector";
 
 export default function FileUpload() {
   const { toast } = useToast();
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const [selectedCycle, setSelectedCycle] = useState("");
-  const [selectedDirection, setSelectedDirection] = useState("");
   const [cbsInward, setCbsInward] = useState<File | null>(null);
   const [cbsOutward, setCbsOutward] = useState<File | null>(null);
   const [cbsBalance, setCbsBalance] = useState("");
@@ -29,12 +25,6 @@ export default function FileUpload() {
   const uploadMutation = useMutation({
     mutationFn: async () => {
       // Validate mandatory fields
-      if (!selectedCycle) {
-        throw new Error("Please select a Cycle (1-10)");
-      }
-      if (!selectedDirection) {
-        throw new Error("Please select a Direction (Inward/Outward)");
-      }
       if (!cbsInward || !cbsOutward || !switchFile) {
         throw new Error("Please select all required files (CBS Inward, CBS Outward, and Switch)");
       }
@@ -46,8 +36,6 @@ export default function FileUpload() {
         switch: switchFile,
         cbs_balance: cbsBalance || cbsBalanceInput,
         transaction_date: date,
-        cycle: selectedCycle,
-        direction: selectedDirection,
         selected_cycles: selectedCycles,
       };
 
@@ -169,28 +157,6 @@ export default function FileUpload() {
           <div className="space-y-6 mt-6">
             <div className="text-sm text-muted-foreground">
               <p>Upload your CBS (Core Banking System) and GL (General Ledger) files for reconciliation.</p>
-            </div>
-
-            {/* Required Fields - Compact */}
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">Cycle *</Label>
-                  <CycleSelector
-                    value={selectedCycle}
-                    onValueChange={setSelectedCycle}
-                    className="w-full"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">Direction *</Label>
-                  <DirectionSelector
-                    value={selectedDirection}
-                    onValueChange={setSelectedDirection}
-                    className="w-full"
-                  />
-                </div>
-              </div>
             </div>
 
             <Card className="shadow-lg">

@@ -12,6 +12,7 @@ import CycleSelector from "../components/CycleSelector";
 import DirectionSelector from "../components/DirectionSelector";
 import { useDate } from "../contexts/DateContext";
 import { exportToCSV } from "../lib/utils";
+import { generateDemoHangingTransactions, generateDemoUnmatchedTransactions } from "../lib/demoData";
 
 export default function Unmatched() {
   const { toast } = useToast();
@@ -21,6 +22,7 @@ export default function Unmatched() {
   const [unmatchedSWITCH, setUnmatchedSWITCH] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const [accountNumber, setAccountNumber] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [amountFrom, setAmountFrom] = useState("");
   const [amountTo, setAmountTo] = useState("");
@@ -28,32 +30,17 @@ export default function Unmatched() {
   const [selectedDirection, setSelectedDirection] = useState("all");
 
   useEffect(() => {
-    fetchUnmatchedData();
+    // DEMO MODE: Use demo data directly
+    const demoHanging = generateDemoHangingTransactions();
+    const npci = demoHanging.filter(t => t.source === 'NPCI');
+    const cbs = demoHanging.filter(t => t.source === 'CBS');
+    const switchData = demoHanging.filter(t => t.source === 'SWITCH');
+    setUnmatchedNPCI(npci);
+    setUnmatchedCBS(cbs);
+    setUnmatchedSWITCH(switchData);
+    setLoading(false);
+    console.log(`Demo data loaded - NPCI: ${npci.length}, CBS: ${cbs.length}, SWITCH: ${switchData.length}`);
   }, []);
-
-  const fetchUnmatchedData = async () => {
-    try {
-      setLoading(true);
-      const response = await apiClient.getReport("unmatched");
-      console.log("Unmatched API response:", response);
-      const report = response || {};
-
-      // Transform the data based on format
-      console.log("Calling transform with", report.data, report.format);
-      const transformed = transformReportToUnmatched(report.data || [], report.format || 'legacy');
-      setUnmatchedNPCI(transformed.npci);
-      setUnmatchedCBS(transformed.cbs);
-      setUnmatchedSWITCH(transformed.switch);
-
-      console.log(`Loaded unmatched data - Format: ${report.format}, NPCI: ${transformed.npci.length}, CBS: ${transformed.cbs.length}, SWITCH: ${transformed.switch.length}`);
-    } catch (error: any) {
-      console.error("Error fetching unmatched data:", error.message);
-      setUnmatchedNPCI([]);
-      setUnmatchedCBS([]);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const transformReportToUnmatched = (data: any, format: string = 'legacy') => {
     console.log("Transforming data:", data, "format:", format);
@@ -181,7 +168,7 @@ export default function Unmatched() {
         }
 
         // Also add if it's a mismatch or partial match
-        if (record.status === 'PARTIAL_MATCH' || record.status === 'MISMATCH' || record.status === 'ORPHAN' || record.status === 'PARTIAL_MISMATCH') {
+        if (record.status === 'PARTIAL_MATCH' || record.status === 'MISMATCH' || record.status === 'HANGING' || record.status === 'PARTIAL_MISMATCH') {
           if (hasNPCI) {
             const transaction = createTransaction(npci_data, "NPCI");
             if (transaction && !npci.some(t => t.rrn === rrn)) npci.push(transaction);
@@ -221,6 +208,11 @@ export default function Unmatched() {
   const matchesFilters = (row: any): boolean => {
     // RRN search
     if (searchTerm && !row.rrn.toUpperCase().includes(searchTerm.toUpperCase())) {
+      return false;
+    }
+
+    // Account Number search (mock - in real system would search actual account field)
+    if (accountNumber && !row.upiTransactionId.toUpperCase().includes(accountNumber.toUpperCase())) {
       return false;
     }
 
@@ -270,6 +262,7 @@ export default function Unmatched() {
 
   const handleClearFilters = () => {
     setSearchTerm("");
+    setAccountNumber("");
     setDateFrom("");
     setDateTo("");
     setTypeFilter("all");
@@ -324,14 +317,22 @@ export default function Unmatched() {
               </div>
             </div>
 
-            {/* Second row: RRN search and date range */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="md:col-span-1">
+            {/* Second row: RRN & A/C Number search */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div>
                 <label className="text-sm font-medium mb-2 block">Search by RRN</label>
                 <Input
                   placeholder="Enter RRN..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">Search by A/C Number</label>
+                <Input
+                  placeholder="Enter Account Number..."
+                  value={accountNumber}
+                  onChange={(e) => setAccountNumber(e.target.value)}
                 />
               </div>
               <div>
@@ -451,8 +452,10 @@ export default function Unmatched() {
                 <div className="flex justify-center py-8">
                   <Loader2 className="w-8 h-8 animate-spin text-brand-blue" />
                 </div>
-              ) : unmatchedNPCI.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8">No unmatched NPCI transactions found</p>
+              ) : unmatchedNPCI.filter(matchesFilters).length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">
+                  {unmatchedNPCI.length === 0 ? 'No unmatched NPCI transactions found' : 'No transactions match the current filters'}
+                </p>
               ) : (
                 <Table>
                   <TableHeader>
@@ -522,8 +525,10 @@ export default function Unmatched() {
                 <div className="flex justify-center py-8">
                   <Loader2 className="w-8 h-8 animate-spin text-brand-blue" />
                 </div>
-              ) : unmatchedCBS.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8">No unmatched CBS transactions found</p>
+              ) : unmatchedCBS.filter(matchesFilters).length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">
+                  {unmatchedCBS.length === 0 ? 'No unmatched CBS transactions found' : 'No transactions match the current filters'}
+                </p>
               ) : (
                 <Table>
                   <TableHeader>
@@ -593,8 +598,10 @@ export default function Unmatched() {
                 <div className="flex justify-center py-8">
                   <Loader2 className="w-8 h-8 animate-spin text-brand-blue" />
                 </div>
-              ) : unmatchedSWITCH.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8">No unmatched SWITCH transactions found</p>
+              ) : unmatchedSWITCH.filter(matchesFilters).length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">
+                  {unmatchedSWITCH.length === 0 ? 'No unmatched SWITCH transactions found' : 'No transactions match the current filters'}
+                </p>
               ) : (
                 <Table>
                   <TableHeader>
